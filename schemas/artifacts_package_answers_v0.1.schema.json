@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "artifacts_package_answers_v0.1.schema.json",
+  "title": "Reusable artifacts package answers",
+  "type": "object",
+  "required": ["schema_version", "questionnaire_version", "template_version", "setup", "answers", "records"],
+  "properties": {
+    "schema_version": {"const": "0.1"},
+    "questionnaire_version": {"type": "string"},
+    "template_version": {"type": "string"},
+    "created": {"type": "string"},
+    "updated": {"type": "string"},
+    "respondent": {"type": "string"},
+    "setup": {"type": "object", "required": ["template_path", "output_path", "shape", "inspection", "command_execution"]},
+    "answers": {"type": "object"},
+    "records": {"type": "object"},
+    "deleted_ids": {"type": "array", "items": {"type": "string"}},
+    "attestation": {"type": "object"}
+  }
+}

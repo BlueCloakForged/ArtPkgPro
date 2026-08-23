@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "artifacts_package_answers_v0.2.schema.json",
+  "title": "Reusable artifacts package answers v0.2",
+  "type": "object",
+  "required": ["schema_version", "questionnaire_version", "template_version", "package_id", "setup", "answers", "records", "harness"],
+  "properties": {
+    "schema_version": {"const": "0.2"},
+    "questionnaire_version": {"type": "string"},
+    "template_version": {"type": "string"},
+    "package_id": {"type": "string", "pattern": "^PKG-[A-F0-9]{12}$"},
+    "parent_package_id": {"type": ["string", "null"]},
+    "created": {"type": "string"},
+    "updated": {"type": "string"},
+    "respondent": {"type": "string"},
+    "setup": {"type": "object", "required": ["template_path", "output_path", "shape", "inspection", "command_execution", "harness_enabled"]},
+    "answers": {"type": "object"},
+    "records": {"type": "object"},
+    "record_field_coverage": {"type": "array"},
+    "deleted_ids": {"type": "array", "items": {"type": "string"}},
+    "answer_history": {"type": "array"},
+    "repository_observations": {"type": "array"},
+    "harness": {"type": "object"},
+    "attestation": {"type": "object"}
+  }
+}
