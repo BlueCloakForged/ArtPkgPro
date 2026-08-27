@@ -1,0 +1,2 @@
+# Required by tools/artpkg_v03.py for Draft 2020-12 JSON Schema validation.
+jsonschema>=4.18,<5

@@ -1,11 +1,15 @@
 # Artifacts package questionnaire
 
-This is a standard-library Python CLI for creating a bounded, evidence-grounded
-package from the supplied template. It records answers with state and
+This is a Python CLI for creating a bounded, evidence-grounded package from
+the supplied template. It records answers with state and
 provenance, validates traceability and authority boundaries, and never treats
 generation as approval. Schema `0.2` adds optional Evidence-First SDLC Harness
 pipeline state; schema `0.1` files migrate on load without losing IDs or
 provenance.
+
+The questionnaire CLI uses only the standard library. The v0.3 requirements
+gateway in `tools/artpkg_v03.py` requires `jsonschema`; install it with
+`python -m pip install -r requirements.txt`.
 
 ## Commands
 
@@ -59,3 +63,17 @@ answer as `NOT_APPLICABLE`. The implementation records repository metadata
 through a fixed read-only Git allowlist only; it never invokes Gortex, performs
 network access, or grants BEC, implementation, execution, acceptance, or
 advancement authority.
+
+## v0.3 requirements gateway contract
+
+`tools/artpkg_v03.py` provides the ArtPkg-side contract for
+`REQUIREMENT_INTAKE` and `EVIDENCE_ENRICHED_SCOPE`. The former is human
+requirement authority with its own semantic revision/digest; the latter embeds
+the exact approved authority snapshot and requires a separately supplied
+current ArtPkg 1 intake for authority validation. `export_dwo()`
+fails closed unless an intake is approved for discovery.
+
+The validators return machine-readable dispositions including
+`REQUIREMENT_INSUFFICIENT`, `STALE_REQUIREMENT_BINDING`, `SCOPE_NOT_APPROVED`,
+and `IMPLEMENTATION_AUTHORITY_ABSENT`. These are ArtPkg contract results only;
+Pipeline-A enforcement remains outside this repository.

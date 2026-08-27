@@ -10,7 +10,12 @@ It does **not** implement the documented project. It does not deploy, publish, m
 - A readable copy of the supplied artifacts-package template
 - A terminal on Windows, macOS, or Linux
 
-The implementation uses only Python’s standard library.
+The questionnaire CLI uses Python’s standard library. The optional v0.3
+requirements gateway additionally requires JSON Schema support:
+
+```text
+python -m pip install -r requirements.txt
+```
 
 ## Start a questionnaire
 
@@ -164,6 +169,20 @@ Next permitted action: HUMAN_REVIEW_ONLY
 ```
 
 An implementation-handoff package remains blocked until the accepted BEC, exact scope, authority, acceptance criteria, validation plan, evidence, and stop conditions are recorded.
+
+## v0.3 requirements gateway
+
+ArtPkg v0.3 adds two linked artifacts for Pipeline-A consumption:
+`REQUIREMENT_INTAKE` is the immutable, human-approved requirement authority,
+and `EVIDENCE_ENRICHED_SCOPE` binds one proposed candidate to an embedded,
+content-addressed approved requirement snapshot that is verified against a
+separately supplied current ArtPkg 1 intake. Evidence may support scope
+interpretation but cannot derive or modify a requirement. The v0.3 helpers are
+in `tools/artpkg_v03.py`; they do not implement or claim Pipeline-A enforcement.
+
+Legacy v0.1/v0.2 artifacts remain readable and renderable. Under v0.3-aware
+logic they are `GENERAL` with `requirement_authority: UNVERIFIED_LEGACY` and
+cannot authorize a DWO until explicitly re-attested in a v0.3 intake.
 
 ## Repository inspection
 

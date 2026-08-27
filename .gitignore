@@ -2,3 +2,16 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.coverage
+htmlcov/
+*.log
+.venv/
+venv/
+
+# Local questionnaire answers and generated handoff packages can contain
+# project-specific or restricted information.
+answers.json
+artifacts_package_answers.json
+artifacts_package.md
+artifacts_package_validation.md
+[0-9][0-9]-*.md
