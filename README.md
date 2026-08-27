@@ -27,6 +27,12 @@ python tools/artifacts_package_questionnaire.py start --answers answers.json
 
 The script asks one question at a time. It autosaves after each accepted answer, so `answers.json` can be used to resume later.
 
+Each terminal prompt includes a **What this question means** explanation and a
+safe example. When a prior answer makes a dependent question inapplicable, the
+CLI skips it and records the reason as derived metadata. Guidance and routing
+never infer human approvals, authority, requirements, priorities, or risk
+acceptance; those always require an explicit human answer.
+
 During the questionnaire, these commands are available:
 
 - `back` moves to the previous question.

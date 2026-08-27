@@ -30,6 +30,15 @@ records use stable IDs such as `ACT-001`, `FR-001`, and `EVD-001`; deleted IDs
 are retained so later records are never renumbered. `UNKNOWN`, `NONE`, and
 `NOT_APPLICABLE` remain distinct values/states.
 
+## Terminal guidance and routing
+
+Every terminal question includes a **What this question means** explanation
+and a safe example. Repeated-record fields receive the same contextual help.
+When a controlling answer makes a dependent question inapplicable, the CLI
+skips it and retains a `DERIVED_BY_SCRIPT` / `NOT_APPLICABLE` record with the
+reason. This reduces irrelevant prompts without inferring human authority,
+approval, requirements, priorities, or risk acceptance.
+
 Generation produces `artifacts_package_answers.json`,
 `artifacts_package.md`, and `artifacts_package_validation.md`. The latter
 contains errors, warnings, blocking IDs, and Gate A through Gate D results.

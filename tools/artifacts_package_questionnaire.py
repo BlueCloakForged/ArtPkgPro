@@ -89,6 +89,91 @@ QUESTION_CATALOG.update({qid: {"id": qid, "prompt": prompt, "type": kind} for qi
 ]})
 QUESTION_CATALOG.update({qid: {"id": qid, "prompt": f"SDLC Harness: {qid}", "type": "HARNESS"} for qid in HARNESS_QUESTION_IDS})
 
+# Guidance is deliberately explanatory only. It may narrow the path through the
+# questionnaire when a prior answer makes a question inapplicable, but it never
+# infers a human judgment, approval, authority, or requirement.
+QUESTION_GROUPS = {
+    "SET": ("Setup", "Configure the template, output location, and permitted operating mode."),
+    "PKG": ("Package context", "Identify what this package covers and the source material it describes."),
+    "AUT": ("Authority", "Record existing human authority precisely; this questionnaire never creates it."),
+    "OVR": ("Problem and outcome", "Describe the problem, intended result, and current work state."),
+    "BND": ("Scope boundary", "Make the included and excluded work explicit before it is handed off."),
+    "DAT": ("Data", "Describe data handling, lineage, and retention constraints."),
+    "SEC": ("Safety and security", "Record restricted-content handling and safe failure behavior."),
+    "OUT": ("Outcomes", "State both the desired result and the unacceptable result to avoid."),
+    "HND": ("Handoff", "Prepare a truthful checkpoint for the next human reviewer."),
+    "FIN": ("Final review", "Confirm completion, sensitive-content, and authority checks before generation."),
+    "HAR": ("SDLC Harness", "Record pipeline state only; recording it does not authorize implementation or execution."),
+    "ACT": ("Actors", "Identify people, roles, or systems affected by the package."),
+    "UC": ("Use cases", "Record a concrete user or system interaction and its observable outcome."),
+    "FC": ("Failure cases", "Record unsafe conditions and the required fail-closed or recovery behavior."),
+    "FR": ("Functional requirements", "Record a human-owned behavior the project must provide."),
+    "NFR": ("Non-functional requirements", "Record measurable quality, operational, or policy constraints."),
+    "AC": ("Acceptance criteria", "Define how a requirement will be shown to pass or fail."),
+    "EVD": ("Evidence", "Record what was observed, where it came from, and its limitations."),
+}
+QUESTION_GUIDANCE = {
+    "PKG-006": ("Identify the exact code or document state this package describes so a later reviewer can reproduce the context.", "A commit such as a1b2c3d, a release such as v0.3.0, or a dated snapshot."),
+    "AUT-001": ("Record authority that already exists. Selecting a value records it; it does not grant any permission.", "DISCOVERY_ONLY, REVIEW_ONLY, or NONE when no authority has been granted."),
+    "BND-001": ("Name the behavior, components, or decisions this package is allowed to discuss or change.", "Order validation and its public API contract."),
+    "BND-002": ("Name nearby work that must not be treated as part of this package.", "Payment processing, database migration, and deployment automation."),
+    "SEC-001": ("Indicate whether restricted or sensitive content is relevant so the follow-up safety questions can be shown only when needed.", "YES for customer data or credentials; NO when none is in scope."),
+    "HAR-000": ("Choose whether this package will be consumed by the SDLC Harness. YES reveals its state questions; NO keeps them out of scope.", "YES only when the package is actually intended for that workflow."),
+}
+TYPE_EXAMPLES = {
+    "PATH_OR_URI": "A relative path, repository URL, or other durable reference.",
+    "ENUM": "Choose one listed value, or use UNKNOWN or NOT_APPLICABLE when that is truthful.",
+    "BOOLEAN": "YES or NO.",
+    "MULTI_ENUM": "A comma-separated list of applicable values, or NOT_APPLICABLE.",
+    "REPEATED_RECORD": "Type add to enter one record, then done when there are no more records to add.",
+    "HARNESS": "A documented pipeline state backed by the appropriate human decision or evidence.",
+    "SHORT_TEXT": "A short, specific phrase or identifier.",
+    "LONG_TEXT": "A concise explanation with enough detail for a later reviewer.",
+}
+
+
+def question_guidance(question_id: str, question: dict[str, Any]) -> dict[str, str]:
+    """Return terminal-only context; it is not an answer or an inference."""
+    prefix = "HAR" if question_id.startswith("HAR-") else question_id.split("-", 1)[0]
+    group, default_meaning = QUESTION_GROUPS.get(prefix, ("Questionnaire", "Provide the information needed to make this package reviewable."))
+    meaning, example = QUESTION_GUIDANCE.get(question_id, (default_meaning, TYPE_EXAMPLES.get(question["type"], "A specific, reviewable answer.")))
+    return {"group": group, "meaning": meaning, "example": example}
+
+
+def format_terminal_question(question_id: str, question: dict[str, Any]) -> str:
+    guidance = question_guidance(question_id, question)
+    return "\n".join([
+        f"\n[{guidance['group']}]",
+        f"{question_id}: {question['prompt']}",
+        f"What this question means: {guidance['meaning']}",
+        f"Example: {guidance['example']}",
+        "Help: answer explicitly; state UNKNOWN, NOT_APPLICABLE, TO_BE_INSPECTED, or DEFERRED when appropriate.",
+        "Do not enter secrets, credentials, tokens, keys, or sensitive payloads.",
+    ])
+
+
+def conditional_skip_reason(document: dict[str, Any], question_id: str) -> str | None:
+    """Return why a derived conditional question should not be shown interactively."""
+    item = document.get("answers", {}).get(question_id, {})
+    if item.get("state") == "NOT_APPLICABLE" and item.get("source_type") == "DERIVED_BY_SCRIPT":
+        return item.get("source_reference") or "a prior answer made this question not applicable"
+    return None
+
+
+def should_ask_question(document: dict[str, Any], question_id: str) -> bool:
+    return conditional_skip_reason(document, question_id) is None
+
+
+def record_field_guidance(section: str, name: str, label: str) -> tuple[str, str]:
+    """Explain repeated-record fields without suggesting a substantive answer."""
+    common = {
+        "source": ("Identify where this information came from; it is not automatically an approval.", "A human declaration, policy reference, or evidence ID."),
+        "owner": ("Name the person or role responsible for this item or its follow-up.", "Product owner or Security reviewer."),
+        "status": ("Record the current state, not a hoped-for future state.", "PROPOSED, OPEN, or NOT_RUN as applicable."),
+        "evidence": ("Reference evidence that supports this record and note its limits elsewhere when needed.", "EVD-001 or a durable source reference."),
+    }
+    return common.get(name, (f"Provide the {label.lower()} for this {section.replace('_', ' ')} record.", "A specific, reviewable value."))
+
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -202,7 +287,8 @@ def collect_record(document: dict[str, Any], section: str, input_fn=input, outpu
     output_fn(f"Collecting one {section.replace('_', ' ')} record. Type cancel to discard it or back to revisit a field.")
     while index < len(fields):
         name, label, choices = fields[index]; suffix = f" ({', '.join(sorted(choices))})" if choices else ""
-        raw = input_fn(f"{label}{suffix}: ").strip(); command = raw.lower()
+        meaning, example = record_field_guidance(section, name, label)
+        raw = input_fn(f"\n{label}{suffix}\nWhat this question means: {meaning}\nExample: {example}\n> ").strip(); command = raw.lower()
         if command == "cancel": return None
         if command == "back": index = max(0, index - 1); continue
         if command.startswith("edit "):
@@ -440,7 +526,12 @@ def interactive_start(path: str, resume: bool = False) -> int:
     qids = list(QUESTION_CATALOG); index = 0
     while index < len(qids):
         qid = qids[index]; question = QUESTION_CATALOG[qid]
-        print(f"\n{qid}: {question['prompt']}\nHelp: answer explicitly; state UNKNOWN, NOT_APPLICABLE, TO_BE_INSPECTED, or DEFERRED when appropriate.\nDo not enter secrets, credentials, tokens, keys, or sensitive payloads.")
+        skip_reason = conditional_skip_reason(document, qid)
+        if skip_reason:
+            print(f"\nSkipping {qid}: {skip_reason}.")
+            index += 1
+            continue
+        print(format_terminal_question(qid, question))
         raw = input("> ").strip(); command = raw.lower()
         if command == "save": save_answers(document, path); print(f"Saved {path}"); continue
         if command == "review": print(json.dumps(document, indent=2, sort_keys=True)); continue

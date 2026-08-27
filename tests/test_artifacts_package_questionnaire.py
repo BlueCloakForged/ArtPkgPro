@@ -151,6 +151,26 @@ class QuestionnaireTests(unittest.TestCase):
         for question_id in ("ACT-SET", "FR-SET", "EVD-SET", "XFR-SET", "VAL-004", "AUT-007-SCOPE"):
             self.assertIn(question_id, q.QUESTION_CATALOG)
 
+    def test_terminal_guidance_explains_questions_without_inferring_answers(self):
+        rendered = q.format_terminal_question("PKG-006", q.QUESTION_CATALOG["PKG-006"])
+        self.assertIn("What this question means:", rendered)
+        self.assertIn("Example:", rendered)
+        self.assertIn("Snapshot", rendered)
+        self.assertIn("a1b2c3d", rendered)
+
+    def test_derived_conditionals_are_skipped_but_human_answers_are_not(self):
+        self.assertFalse(q.should_ask_question(self.document, "HAR-001"))
+        self.assertIn("HAR-000 is NO", q.conditional_skip_reason(self.document, "HAR-001"))
+        q.set_answer(self.document, "HAR-001", "INTAKE")
+        self.assertTrue(q.should_ask_question(self.document, "HAR-001"))
+
+    def test_repeated_record_field_prompt_contains_context(self):
+        values = iter(["cancel"])
+        prompts = []
+        q.collect_record(self.document, "actors", input_fn=lambda prompt: prompts.append(prompt) or next(values), output_fn=lambda _text: None)
+        self.assertIn("What this question means:", prompts[0])
+        self.assertIn("Example:", prompts[0])
+
     def test_field_by_field_record_done_and_cancel(self):
         values = iter(["add", "Ada", "OWNER", "maintains package", "scope", "done"])
         ids = q.collect_repeated(self.document, "actors", input_fn=lambda _prompt: next(values), output_fn=lambda _text: None)
