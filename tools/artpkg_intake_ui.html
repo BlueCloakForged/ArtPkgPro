@@ -33,6 +33,12 @@
     .guidance { border-left:3px solid #2f6f5e; background:#eef7f3; padding:10px 12px; display:grid; gap:6px; font-size:13px; line-height:1.4; }
     .guidance-title { font-weight:700; color:#183d34; }
     .guidance-row { display:grid; gap:2px; }
+    .guidance-block { display:grid; gap:4px; padding:8px 0; border-top:1px solid rgba(47, 111, 94, .22); }
+    .guidance-block:first-of-type { border-top:0; padding-top:0; }
+    .guidance-block pre { white-space:pre-wrap; margin:0; font-family:Consolas, monospace; font-size:12px; line-height:1.45; background:#fff; border:1px solid #d8dee6; border-radius:6px; padding:8px; }
+    .guidance-list { margin:0; padding-left:18px; display:grid; gap:3px; }
+    details.guidance-details { border-top:1px solid rgba(47, 111, 94, .22); padding-top:8px; }
+    details.guidance-details summary { cursor:pointer; font-weight:700; }
     .field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:8px; }
     .field-note { border:1px solid #d8dee6; border-radius:6px; padding:8px; background:#fff; display:grid; gap:4px; }
     .field-note strong { font-size:13px; }
@@ -108,26 +114,90 @@
 
     function renderQuestionContext(card, item) {
       const question = item.question || {};
+      const source = item.source_context || {};
+      const confidence = item.confidence_context || {};
+      const recommendation = item.state_recommendation || {};
       const guidance = document.createElement("div");
       guidance.className = "guidance";
       appendText(guidance, "div", "guidance-title", `${question.group || "Questionnaire"} - ${question.answer_type || "Answer"}`);
       appendText(guidance, "div", "", question.group_description || "Provide enough context to make this package reviewable.");
+      if (recommendation.suggested_state || recommendation.action) {
+        const next = document.createElement("div");
+        next.className = "guidance-block";
+        appendText(next, "strong", "", "Recommended next step");
+        appendText(next, "span", "", `Suggested state: ${recommendation.suggested_state || "Review"}`);
+        appendText(next, "span", "", `Action: ${(recommendation.action || "review_current_answer").replaceAll("_", " ")}`);
+        appendText(next, "span", "", recommendation.reason || "Review this answer before using it for downstream package decisions.");
+        if (recommendation.fallback) appendText(next, "span", "meta", recommendation.fallback);
+        guidance.appendChild(next);
+      }
+      const decision = document.createElement("div");
+      decision.className = "guidance-block";
+      appendText(decision, "strong", "", "You are deciding");
+      appendText(decision, "span", "", question.decision_prompt || "What human-owned answer ArtPkg should use for this package.");
+      guidance.appendChild(decision);
+      if (question.answer_scaffold) {
+        const scaffold = document.createElement("div");
+        scaffold.className = "guidance-block";
+        appendText(scaffold, "strong", "", "How to answer");
+        appendText(scaffold, "pre", "", question.answer_scaffold);
+        guidance.appendChild(scaffold);
+      }
+      const found = document.createElement("div");
+      found.className = "guidance-block";
+      appendText(found, "strong", "", "What ArtPkg found");
+      appendText(found, "span", "", source.summary || "Review the uploaded source and decide whether this value is truthful.");
+      guidance.appendChild(found);
+      if ((question.downstream_effects || []).length) {
+        const impact = document.createElement("div");
+        impact.className = "guidance-block";
+        appendText(impact, "strong", "", "Downstream impact");
+        const list = document.createElement("ul");
+        list.className = "guidance-list";
+        question.downstream_effects.forEach((effect) => appendText(list, "li", "", effect));
+        impact.appendChild(list);
+        guidance.appendChild(impact);
+      }
+      const technical = document.createElement("details");
+      technical.className = "guidance-details";
+      appendText(technical, "summary", "", "Technical details");
+      const sourceBlock = document.createElement("div");
+      sourceBlock.className = "guidance-block";
+      appendText(sourceBlock, "strong", "", "Source details");
+      appendText(sourceBlock, "span", "meta", `Answer status: ${source.answer_status || item.state || "UNKNOWN"} | Source status: ${source.source_status || "unknown"} | Source: ${source.source_reference || item.source_reference || "n/a"}`);
+      if (recommendation.checklist) appendText(sourceBlock, "span", "meta", `Review checklist: ${recommendation.checklist}`);
+      technical.appendChild(sourceBlock);
+      const confidenceBlock = document.createElement("div");
+      confidenceBlock.className = "guidance-block";
+      appendText(confidenceBlock, "strong", "", confidence.label || "Classification confidence");
+      appendText(confidenceBlock, "span", "", confidence.meaning || "Confidence describes source classification, not human approval.");
+      appendText(confidenceBlock, "span", "meta", `Score: ${confidence.score ?? item.confidence_score ?? "n/a"} | Label: ${confidence.confidence_label || "n/a"} | Basis: ${confidence.basis || "n/a"}`);
+      technical.appendChild(confidenceBlock);
       const meaning = document.createElement("div");
-      meaning.className = "guidance-row";
-      appendText(meaning, "strong", "", "What this means");
+      meaning.className = "guidance-block";
+      appendText(meaning, "strong", "", "Question definition");
       appendText(meaning, "span", "", question.meaning || "Answer this explicitly, or mark it unknown/deferred when that is truthful.");
-      guidance.appendChild(meaning);
+      technical.appendChild(meaning);
       if (question.example) {
         const example = document.createElement("div");
         example.className = "guidance-row";
         appendText(example, "strong", "", "Example");
         appendText(example, "span", "", question.example);
-        guidance.appendChild(example);
+        technical.appendChild(example);
       }
       if ((question.choices || []).length) {
-        appendText(guidance, "div", "meta", `Allowed choices: ${question.choices.join(", ")}`);
+        appendText(technical, "div", "meta", `Allowed choices: ${question.choices.join(", ")}`);
       }
+      guidance.appendChild(technical);
       card.appendChild(guidance);
+    }
+
+    function answerSummary(item) {
+      const source = item.source_context || {};
+      const missing = source.source_status === "missing_in_source" || ["UNKNOWN", "DEFERRED", "TO_BE_INSPECTED"].includes(item.state || "");
+      const status = missing ? "Missing answer" : "Seeded answer";
+      const finding = source.source_status === "missing_in_source" ? "no explicit source answer found" : "seeded from uploaded source";
+      return `${item.reason || ""} | Status: ${status} | Source finding: ${finding}`;
     }
 
     function renderRecordContext(card, item) {
@@ -183,7 +253,7 @@
         const matchesFocus = focusItemId && (item.id === focusItemId || item.section === focusItemId || item.label === focusItemId);
         if (matchesFocus) card.setAttribute("data-focus-match", "true");
         appendText(card, "strong", "", `${item.id} ${item.label || ""}`);
-        appendText(card, "div", "meta", `${item.reason || ""} | ${item.state || ""} | ${item.source_type || ""} | confidence ${item.confidence_score ?? "n/a"}`);
+        appendText(card, "div", "meta", item.kind === "answer" ? answerSummary(item) : `${item.reason || ""} | ${item.state || ""} | ${item.source_type || ""}`);
         if (item.kind === "answer") renderQuestionContext(card, item);
         if (item.kind === "record") renderRecordContext(card, item);
         appendText(card, "div", "value", typeof item.value === "string" ? item.value : JSON.stringify(item.value, null, 2));

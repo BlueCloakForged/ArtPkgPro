@@ -116,6 +116,83 @@ class IntakeSessionTests(unittest.TestCase):
         self.assertEqual("Order validation and its public API contract.", bnd_item["question"]["example"])
         self.assertEqual([], bnd_item["question"]["choices"])
 
+    def test_answer_queue_items_include_project_agnostic_review_guidance(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+        bnd_item = next(item for item in session["review_queues"]["needs_answer"] if item["id"] == "BND-001")
+
+        self.assertEqual(
+            "What work this artifact package is allowed to cover.",
+            bnd_item["question"]["decision_prompt"],
+        )
+        self.assertIn("This package is in scope for:", bnd_item["question"]["answer_scaffold"])
+        self.assertIn("It may make decisions about:", bnd_item["question"]["answer_scaffold"])
+        self.assertIn("It does not authorize:", bnd_item["question"]["answer_scaffold"])
+        self.assertIn("scope expansion", " ".join(bnd_item["question"]["downstream_effects"]))
+
+    def test_question_guidance_scales_by_question_family(self):
+        aut_context = intake._question_context("AUT-001")
+        ac_context = intake._question_context("AC-SET")
+        generic_context = intake._question_context("FUT-001")
+
+        self.assertIn("who granted permission", aut_context["decision_prompt"])
+        self.assertIn("Authority granted by:", aut_context["answer_scaffold"])
+        self.assertIn("What must be true", ac_context["decision_prompt"])
+        self.assertIn("Pass condition:", ac_context["answer_scaffold"])
+        self.assertIn("What human-owned answer", generic_context["decision_prompt"])
+        self.assertIn("Source basis:", generic_context["answer_scaffold"])
+
+    def test_answer_queue_items_explain_unknown_source_attribution_and_confidence(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+        bnd_item = next(item for item in session["review_queues"]["needs_answer"] if item["id"] == "BND-001")
+
+        self.assertEqual("UNKNOWN", bnd_item["source_context"]["answer_status"])
+        self.assertEqual("missing_in_source", bnd_item["source_context"]["source_status"])
+        self.assertIn("No explicit in-scope statement", bnd_item["source_context"]["summary"])
+        self.assertEqual("Classification confidence", bnd_item["confidence_context"]["label"])
+        self.assertIn("missing or seeded", bnd_item["confidence_context"]["meaning"])
+
+    def test_missing_answer_queue_items_recommend_human_provided_state(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+        bnd_item = next(item for item in session["review_queues"]["needs_answer"] if item["id"] == "BND-001")
+
+        recommendation = bnd_item["state_recommendation"]
+        self.assertEqual("PROVIDED", recommendation["suggested_state"])
+        self.assertEqual("write_human_answer", recommendation["action"])
+        self.assertIn("scope-sensitive downstream decisions", recommendation["reason"])
+        self.assertIn("Use TO_BE_INSPECTED", recommendation["fallback"])
+        self.assertFalse(recommendation["can_auto_apply"])
+
+    def test_seeded_authority_answers_recommend_human_confirmation(self):
+        item = {
+            "state": "PROVIDED",
+            "value": "ArtPkg intake UI",
+            "source_type": "SOURCE_ARTIFACT",
+            "source_reference": "ArtPkg intake UI",
+        }
+
+        recommendation = intake._state_recommendation("AUT-002", item)
+
+        self.assertEqual("PROVIDED", recommendation["suggested_state"])
+        self.assertEqual("confirm_seeded_answer", recommendation["action"])
+        self.assertIn("authority-sensitive", recommendation["reason"])
+        self.assertIn("does not broaden authority", recommendation["checklist"])
+        self.assertFalse(recommendation["can_auto_apply"])
+
     def test_record_queue_items_include_schema_context_for_human_review(self):
         session = intake.create_intake_session(
             self.pre,
