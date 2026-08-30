@@ -46,6 +46,21 @@ Repeated records are entered one field at a time. The script assigns stable IDs 
 
 Do not enter passwords, API keys, tokens, credentials, private payloads, or regulated personal data. Use `UNKNOWN`, `NOT_APPLICABLE`, `TO_BE_INSPECTED`, or `DEFERRED` when the answer is not available. Do not use an empty answer to imply `NO`, `NONE`, approval, or authorization.
 
+## Start the local intake UI
+
+The local intake UI lets a reviewer upload or select a pre-artifacts Markdown
+file, seed a draft questionnaire, and review fields grouped by urgency.
+
+```text
+python tools/artifacts_package_questionnaire.py intake-ui --workspace . --port 8765 --open
+```
+
+The UI is ArtPkg-owned. It does not grant approval, implementation authority,
+execution authority, publication authority, deployment authority, or permission
+to process sensitive content. Local sessions are written under `.artpkg/` and
+are gitignored because they can contain project-specific or restricted
+information.
+
 ## Resume a saved questionnaire
 
 ```text

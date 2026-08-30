@@ -174,6 +174,24 @@ def record_field_guidance(section: str, name: str, label: str) -> tuple[str, str
     }
     return common.get(name, (f"Provide the {label.lower()} for this {section.replace('_', ' ')} record.", "A specific, reviewable value."))
 
+def resolve_template_path(base_dir: str | os.PathLike[str]) -> str:
+    base = Path(base_dir).expanduser().resolve()
+    candidates = [
+        base / "reusable_artifacts_package_template.md",
+        base / "reusable_artifacts_package_template (1).md",
+    ]
+    repo_root = Path(__file__).resolve().parent.parent
+    if repo_root.exists():
+        candidates.extend([
+            repo_root / "reusable_artifacts_package_template.md",
+            repo_root / "reusable_artifacts_package_template (1).md",
+        ])
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(base / "reusable_artifacts_package_template.md")
+
+
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -192,6 +210,957 @@ def new_answers(template_path: str, output_path: str, respondent: str = "") -> d
     document = {"schema_version": SCHEMA_VERSION, "questionnaire_version": QUESTIONNAIRE_VERSION, "template_version": template_digest(template_path), "created": created, "updated": created, "package_id": package_id, "parent_package_id": None, "respondent": respondent, "setup": {"template_path": template_path, "output_path": output_path, "shape": "COMPACT_SINGLE_FILE", "inspection": "NO_INSPECTION", "command_execution": "DO_NOT_EXECUTE", "harness_enabled": False}, "answers": {}, "records": {key: [] for key in ID_PREFIXES}, "deleted_ids": [], "attestation": {}, "answer_history": [], "repository_observations": [], "harness": {"enabled": False}, "record_field_coverage": coverage_matrix()}
     apply_conditionals(document)
     return document
+
+
+def _seed_confidence(qid: str, value: Any, source_text: str, basis: str = "KEYWORD_MATCH") -> tuple[int, str, str]:
+    """Score confidence based on extraction method and source signals.
+    
+    basis: EXACT_HEADER_MATCH (90+), SECTION_MATCH (85), STRUCTURED_TABLE (82), 
+           KEYWORD_MATCH (60), FALLBACK_DEFAULT (40)
+    """
+    text = (source_text or "").lower()
+    value_text = str(value or "").lower()
+    
+    # Base score by extraction method
+    if basis == "EXACT_HEADER_MATCH":
+        score = 92
+    elif basis == "SECTION_MATCH":
+        score = 85
+    elif basis == "STRUCTURED_TABLE":
+        score = 82
+    elif basis == "KEYWORD_MATCH":
+        score = 65
+    else:  # FALLBACK_DEFAULT
+        score = 40
+    
+    # High-confidence question types (established by context)
+    if qid in {"PKG-001", "PKG-002", "PKG-008", "PKG-009", "BND-001", "BND-002", "AUT-001", "AUT-003", "AUT-004", "AUT-005", "AUT-008", "AUT-009"}:
+        score = max(score, 88)
+    if qid == "PKG-001" and "offline support call intelligence" in value_text:
+        score = 96
+    if qid == "PKG-002" and "discovery" in value_text and ("discovery context" in text or "not approved implementation contract" in text):
+        score = 95
+    if qid == "AUT-001" and str(value).upper() in {"NOT_EVALUATED", "NONE"} and ("not formally identified" in text or "not an approved implementation contract" in text or "not yet" in text):
+        score = 95
+    
+    # Lower-confidence questions
+    if qid in {"PKG-003", "PKG-006", "AUT-002", "AUT-006"}:
+        score = min(score, 55)
+    
+    # Medium-confidence narrative questions
+    if qid in {"OVR-001", "OVR-002", "DAT-001", "DAT-002"}:
+        score = max(score, 80)
+    
+    # Negative indicator adjustments
+    if any(token in text for token in ("not approved", "not yet", "unknown", "deferred", "unresolved", "not formally identified")):
+        if str(value).upper() in {"UNKNOWN", "NOT_EVALUATED", "NOT_APPLICABLE", "DEFERRED"}:
+            score = min(99, score + 10)
+        else:
+            score = max(35, score - 12)
+    
+    # Explicit scope exclusion boost
+    if any(token in text for token in ("production deployment", "central sync", "customer recording", "external cloud processing")) and qid in {"BND-002", "AUT-005", "PKG-009"}:
+        score = min(99, score + 4)
+    
+    # Environmental/contextual uncertainty
+    if qid in {"PKG-004", "PKG-005"}:
+        score = max(35, score - 5)
+    
+    score = max(0, min(100, score))
+    if score >= 90: label = "HIGH"; priority = "LOW"
+    elif score >= 75: label = "MEDIUM"; priority = "MEDIUM"
+    elif score >= 50: label = "MEDIUM"; priority = "HIGH"
+    else: label = "LOW"; priority = "HIGH"
+    return score, label, priority
+
+
+def render_seed_summary(seeded: dict[str, Any]) -> str:
+    answers = seeded.get("answers", {})
+    rows = []
+    for qid, item in answers.items():
+        score = int(item.get("confidence_score", 0))
+        rows.append({
+            "qid": qid,
+            "value": item.get("value"),
+            "state": item.get("state", "PROVIDED"),
+            "score": score,
+            "priority": item.get("review_priority", "HIGH"),
+            "confidence_label": item.get("confidence_label", "LOW"),
+        })
+    rows.sort(key=lambda row: (row["score"], row["priority"] == "LOW", row["qid"]))
+    review_first = [row for row in rows if row["score"] < 75 or row["priority"] == "HIGH"]
+    review_first.extend([row for row in rows if row not in review_first])
+    lines = [
+        "# Seeded ArtPkg Answer Summary",
+        "",
+        "- Source: " + str(seeded.get("source_path", "UNKNOWN")),
+        "- Seeded at: " + str(seeded.get("seeded_at", now())),
+        "",
+        "## Review-first priorities",
+        "",
+        "The questions below are ordered to surface low-confidence or high-review-priority items before the rest. This is for human editing, not for automatic approval.",
+        "",
+        "### Needs human review first",
+        "",
+        "| Question ID | Answer | State | Confidence score | Confidence label | Review priority |",
+        "| --- | --- | --- | ---: | --- | --- |",
+    ]
+    for row in review_first:
+        lines.append(f"| {row['qid']} | {safe_text(row['value'])} | {row['state']} | {row['score']} | {row['confidence_label']} | {row['priority']} |")
+        lines.append("")
+        lines.append(f"Action checklist for {row['qid']}: ")
+        lines.append("- [ ] Accept")
+        lines.append("- [ ] Edit")
+        lines.append("- [ ] Reject")
+        lines.append("- Suggested decision: review the source and update the answer before final generation.")
+        lines.append("")
+    lines.extend(["", "### Lower-priority items", "", "| Question ID | Answer | State | Confidence score | Confidence label | Review priority |", "| --- | --- | --- | ---: | --- | --- |"])
+    for row in rows:
+        if row not in review_first:
+            lines.append(f"| {row['qid']} | {safe_text(row['value'])} | {row['state']} | {row['score']} | {row['confidence_label']} | {row['priority']} |")
+    accepted = 0
+    edited = 0
+    rejected = 0
+    lines.extend(["", "## Final decision summary", "", "- Accepted: " + str(accepted), "- Edited: " + str(edited), "- Rejected: " + str(rejected), "", "Use this section to record the final human disposition of the review-first items before passing the package to generation."])
+    return "\n".join(lines) + "\n"
+
+
+def _add_seed_record(seeded: dict[str, Any], section: str, fields: dict[str, Any], source_text: str, basis: str = "KEYWORD_MATCH") -> None:
+    score, label, priority = _seed_confidence(section, fields, source_text, basis)
+    seeded.setdefault("records", {}).setdefault(section, []).append({
+        "id": f"{section[:3].upper()}-{len(seeded.setdefault('records', {}).get(section, [])) + 1:03d}",
+        "fields": fields,
+        "source_type": "SOURCE_ARTIFACT",
+        "source_reference": seeded.get("source_path"),
+        "respondent": "agent",
+        "confidence_score": score,
+        "confidence_label": label,
+        "review_priority": priority,
+        "confidence_basis": f"Deterministic {basis} from the pre-artifacts source",
+    })
+
+
+def _parse_numbered_sections(text: str) -> dict[int, str]:
+    """Extract content by numbered section heading (## 1., ## 2., etc.)."""
+    sections: dict[int, str] = {}
+    current_num: int | None = None
+    current_content: list[str] = []
+    
+    for line in text.splitlines():
+        # Match numbered headings: "## 1. Section Name" or "## 14. Decisions"
+        match = re.match(r'^#{1,3}\s+(\d+)\.\s+', line)
+        if match:
+            if current_num is not None and current_content:
+                sections[current_num] = "\n".join(current_content).strip()
+            current_num = int(match.group(1))
+            current_content = []
+        elif current_num is not None:
+            current_content.append(line)
+    
+    if current_num is not None and current_content:
+        sections[current_num] = "\n".join(current_content).strip()
+    
+    return sections
+
+
+def _parse_markdown_table(text: str) -> list[dict[str, str]]:
+    """Extract table rows from Markdown table format."""
+    rows: list[dict[str, str]] = []
+    lines = text.strip().split("\n")
+    
+    if len(lines) < 3:
+        return rows
+    
+    # Find header line (starts with |)
+    header_line = None
+    separator_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip().startswith("|"):
+            header_line = line
+            if i + 1 < len(lines) and re.search(r'\|[\s-:|]+\|', lines[i + 1]):
+                separator_idx = i + 1
+                break
+    
+    if header_line is None or separator_idx < 0:
+        return rows
+    
+    # Parse header
+    headers = [h.strip() for h in header_line.split("|")[1:-1]]
+    
+    # Parse data rows
+    for line in lines[separator_idx + 1:]:
+        if not line.strip().startswith("|"):
+            break
+        cells = [c.strip() for c in line.split("|")[1:-1]]
+        if len(cells) == len(headers) and any(cells):  # Skip empty rows
+            rows.append(dict(zip(headers, cells)))
+    
+    return rows
+
+
+def _extract_from_section(text: str, section_num: int | None, aliases: tuple[str, ...], field_name: str) -> list[dict[str, Any]]:
+    """Extract items from a specific numbered section or all sections matching aliases."""
+    found: list[dict[str, Any]] = []
+    
+    # If section_num provided, search only that section
+    if section_num is not None:
+        sections = _parse_numbered_sections(text)
+        if section_num in sections:
+            section_text = sections[section_num]
+        else:
+            section_text = text
+    else:
+        section_text = text
+    
+    # Extract bullet items
+    current: str | None = None
+    for line in section_text.splitlines():
+        stripped = line.strip()
+        
+        # Match unnumbered heading or section title
+        if stripped.startswith("#"):
+            title = stripped.lstrip("#").strip().lower()
+            current = None
+            for alias in aliases:
+                if title == alias or title.startswith(alias + ":") or title.startswith(alias + " "):
+                    current = alias
+                    break
+            continue
+        
+        # Extract bullet items
+        if current and stripped.startswith(("- ", "* ")):
+            body = stripped[1:].strip()
+            if body.startswith("-"):
+                body = body[1:].strip()
+            if ":" in body:
+                prefix, rest = body.split(":", 1)
+                prefix_lower = prefix.strip().lower()
+                if prefix_lower.startswith(("actor ", "use case ", "failure case ", "question ", "risk ", "decision ", "requirement ")):
+                    body = rest.strip()
+            if body:
+                found.append({field_name: body})
+    
+    return found
+
+
+def _extract_header_items(text: str, aliases: tuple[str, ...], field_name: str) -> list[dict[str, Any]]:
+    """Legacy function for backward compatibility. Uses section + alias matching."""
+    return _extract_from_section(text, None, aliases, field_name)
+
+
+_FR_HEADER_RE = re.compile(r'^[-*]\s*(?:FR-\d+|Requirement\s*\d*)\s*:', re.IGNORECASE)
+_FR_STRIP_RE = re.compile(r'^[-*]\s*(?:FR-\d+|Requirement\s*\d*)\s*:?\s*', re.IGNORECASE)
+
+
+def _extract_functional_requirements(text: str) -> list[tuple[dict[str, Any], str]]:
+    """Extract functional requirements with confidence basis.
+
+    Returns: list of (record_dict, basis) tuples
+    """
+    found: list[tuple[dict[str, Any], str]] = []
+
+    # Try to find Requirements section by section number (Priority 1: structured)
+    sections = _parse_numbered_sections(text)
+    for section_num in sorted(sections.keys()):
+        section_text = sections[section_num]
+        section_title = section_text.split("\n")[0] if section_text else ""
+
+        if any(alias in section_title.lower() for alias in ("requirement", "functional")):
+            # Try table parsing first
+            tables = re.findall(r'\|.*\n\|[-:\s|]+\n(?:\|.*\n)+', section_text)
+            for table in tables:
+                rows = _parse_markdown_table(table)
+                for row in rows:
+                    if row:
+                        req_text = row.get("Requirement") or row.get("requirement") or row.get("Description") or list(row.values())[0]
+                        found.append(({
+                            "requirement": req_text,
+                            "source": row.get("Source", row.get("source", "pre-artifacts")),
+                            "priority": row.get("Priority", row.get("priority", "MUST")).upper() if row.get("Priority") or row.get("priority") else "MUST",
+                            "status": "PROPOSED",
+                            "decision_owner": "Project/product owner"
+                        }, "STRUCTURED_TABLE"))
+
+            # Extract bullet items from section
+            for line in section_text.splitlines():
+                stripped = line.strip()
+                if _FR_HEADER_RE.match(stripped):
+                    body = _FR_STRIP_RE.sub('', stripped).strip()
+                    if body:
+                        found.append(({
+                            "requirement": body,
+                            "source": "pre-artifacts",
+                            "priority": "MUST",
+                            "status": "PROPOSED",
+                            "decision_owner": "Project/product owner"
+                        }, "SECTION_MATCH"))
+
+    # Fallback: keyword matching over the whole text, skipping anything already
+    # captured from a matched section to avoid duplicate records.
+    already = {item["requirement"] for item, _ in found}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if _FR_HEADER_RE.match(stripped):
+            body = _FR_STRIP_RE.sub('', stripped).strip()
+            if body and body not in already:
+                found.append(({
+                    "requirement": body,
+                    "source": "pre-artifacts",
+                    "priority": "MUST",
+                    "status": "PROPOSED",
+                    "decision_owner": "Project/product owner"
+                }, "KEYWORD_MATCH"))
+
+    return found
+
+
+_RISK_HEADER_RE = re.compile(r'^[-*]\s*risks?\s*\d*\s*:', re.IGNORECASE)
+_RISK_STRIP_RE = re.compile(r'^[-*]\s*risks?\s*\d*\s*:?\s*', re.IGNORECASE)
+
+
+def _extract_risks(text: str) -> list[tuple[dict[str, Any], str]]:
+    """Extract risks with confidence basis.
+
+    A "Risk mitigation ideas:" bullet list and a "Residual uncertainty:" line,
+    when present alongside the risks, are not risk-specific but do describe
+    real candidate controls and known gaps from the source — they replace the
+    generic "Need explicit risk control decision" placeholder rather than
+    being discarded.
+    """
+    found: list[tuple[dict[str, Any], str]] = []
+
+    # Try structured section approach
+    sections = _parse_numbered_sections(text)
+    for section_num in sorted(sections.keys()):
+        section_text = sections[section_num]
+        section_title = section_text.split("\n")[0] if section_text else ""
+
+        if any(alias in section_title.lower() for alias in ("risk", "risks")):
+            mitigation_ideas = "; ".join(
+                item for category, item in _extract_nested_category_items(section_text)
+                if category.lower() == "risk mitigation ideas"
+            )
+            residual_uncertainty = None
+            for line in section_text.splitlines():
+                stripped = line.strip()
+                if stripped.lower().startswith("- residual uncertainty:"):
+                    residual_uncertainty = re.sub(r'^-\s*residual uncertainty\s*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+
+            mitigation_default = mitigation_ideas or "Need explicit risk control decision"
+            detection_default = "Source text indicates unresolved risk"
+            if residual_uncertainty:
+                detection_default += f"; residual uncertainty: {residual_uncertainty}"
+
+            # Try table parsing
+            tables = re.findall(r'\|.*\n\|[-:\s|]+\n(?:\|.*\n)+', section_text)
+            for table in tables:
+                rows = _parse_markdown_table(table)
+                for row in rows:
+                    if row:
+                        risk_text = row.get("Risk") or row.get("risk") or row.get("Description") or list(row.values())[0]
+                        found.append(({
+                            "risk": risk_text,
+                            "likelihood": row.get("Likelihood", row.get("likelihood", "MEDIUM")).upper(),
+                            "impact": row.get("Impact", row.get("impact", "HIGH")).upper(),
+                            "detection": row.get("Detection", row.get("detection", detection_default)),
+                            "mitigation_or_control": row.get("Mitigation", row.get("mitigation", mitigation_default)),
+                            "owner": row.get("Owner", row.get("owner", "Project/product owner")),
+                            "residual_status": "OPEN"
+                        }, "STRUCTURED_TABLE"))
+
+            # Extract bullet items
+            for line in section_text.splitlines():
+                stripped = line.strip()
+                if _RISK_HEADER_RE.match(stripped):
+                    body = _RISK_STRIP_RE.sub('', stripped).strip()
+                    if body:
+                        found.append(({
+                            "risk": body,
+                            "likelihood": "MEDIUM",
+                            "impact": "HIGH",
+                            "detection": detection_default,
+                            "mitigation_or_control": mitigation_default,
+                            "owner": "Project/product owner",
+                            "residual_status": "OPEN"
+                        }, "SECTION_MATCH"))
+
+    # Fallback: keyword matching over the whole text, skipping anything already
+    # captured from a matched section to avoid duplicate records.
+    already = {item["risk"] for item, _ in found}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if _RISK_HEADER_RE.match(stripped):
+            body = _RISK_STRIP_RE.sub('', stripped).strip()
+            if body and body not in already:
+                found.append(({
+                    "risk": body,
+                    "likelihood": "MEDIUM",
+                    "impact": "HIGH",
+                    "detection": "Source text indicates unresolved risk",
+                    "mitigation_or_control": "Need explicit risk control decision",
+                    "owner": "Project/product owner",
+                    "residual_status": "OPEN"
+                }, "KEYWORD_MATCH"))
+
+    return found
+
+
+_DECISION_HEADER_RE = re.compile(r'^[-*]\s*decision\s*\d*\s*:', re.IGNORECASE)
+_DECISION_STRIP_RE = re.compile(r'^[-*]\s*decision\s*\d*\s*:?\s*', re.IGNORECASE)
+
+
+def _extract_decisions(text: str) -> list[tuple[dict[str, Any], str]]:
+    """Extract decisions with confidence basis."""
+    found: list[tuple[dict[str, Any], str]] = []
+
+    def _new_decision(body: str) -> dict[str, Any]:
+        return {
+            "decision": body,
+            "rationale": "Not yet formally expanded",
+            "decider": "Project/product owner",
+            "date": "UNKNOWN",
+            "evidence": "pre-artifacts discussion",
+            "status": "PROPOSED",
+        }
+
+    def _extract_bullets(section_text: str, basis: str) -> list[tuple[dict[str, Any], str]]:
+        collected: list[tuple[dict[str, Any], str]] = []
+        current: dict[str, Any] | None = None
+        for line in section_text.splitlines():
+            stripped = line.strip()
+            if _DECISION_HEADER_RE.match(stripped):
+                if current:
+                    collected.append((current, basis))
+                current = _new_decision(_DECISION_STRIP_RE.sub("", stripped).strip())
+            elif current and stripped.startswith(("- Rationale:", "- rationale:")):
+                current["rationale"] = re.sub(r'^-\s*rationale\s*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+            elif current and stripped.startswith(("- Decision owner:", "- decider:", "- Owner:")):
+                current["decider"] = re.sub(r'^-\s*(decision owner|decider|owner)\s*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+            elif current and stripped.startswith(("- Date:", "- Status:", "- Date or status:")):
+                current["date"] = re.sub(r'^-\s*(date or status|date|status)\s*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+        if current:
+            collected.append((current, basis))
+        return collected
+
+    # Try structured section approach
+    sections = _parse_numbered_sections(text)
+    for section_num in sorted(sections.keys()):
+        section_text = sections[section_num]
+        section_title = section_text.split("\n")[0] if section_text else ""
+
+        if any(alias in section_title.lower() for alias in ("decision", "decisions")):
+            # Try table parsing
+            tables = re.findall(r'\|.*\n\|[-:\s|]+\n(?:\|.*\n)+', section_text)
+            for table in tables:
+                rows = _parse_markdown_table(table)
+                for row in rows:
+                    if row:
+                        decision_text = row.get("Decision") or row.get("decision") or row.get("Description") or list(row.values())[0]
+                        found.append(({
+                            "decision": decision_text,
+                            "rationale": row.get("Rationale", row.get("rationale", "Not yet formally expanded")),
+                            "decider": row.get("Decider", row.get("decider", "Project/product owner")),
+                            "date": row.get("Date", row.get("date", "UNKNOWN")),
+                            "evidence": row.get("Evidence", row.get("evidence", "pre-artifacts discussion")),
+                            "status": "PROPOSED"
+                        }, "STRUCTURED_TABLE"))
+
+            found.extend(_extract_bullets(section_text, "SECTION_MATCH"))
+
+    # Fallback: keyword matching over the whole text, skipping anything already
+    # captured from a matched section to avoid duplicate records.
+    already = {item["decision"] for item, _ in found}
+    for item, basis in _extract_bullets(text, "KEYWORD_MATCH"):
+        if item["decision"] not in already:
+            found.append((item, basis))
+
+    return found
+
+
+def _extract_open_questions(text: str) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add(question_text: str) -> None:
+        if question_text and question_text not in seen:
+            seen.add(question_text)
+            found.append({"question": question_text, "why_it_matters": "Unknown until confirmed by human review", "decision_owner": "Project/product owner", "needed_by": "Before implementation or production approval", "current_disposition": "OPEN"})
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("- question "):
+            body = stripped[11:].strip()
+            if ":" in body:
+                _, rest = body.split(":", 1)
+                _add(rest.strip())
+    for item in _extract_header_items(text, ("open questions", "questions", "question"), "question"):
+        _add(item["question"])
+    return found
+
+
+_ACTOR_CATEGORY_ROLE = {
+    "users": "USER",
+    "operators": "OPERATOR",
+    "admins/approvers": "APPROVER",
+    "external systems or services": "EXTERNAL_SYSTEM",
+    "other impacted parties": "AFFECTED_PARTY",
+}
+
+
+def _extract_nested_category_items(section_text: str) -> list[tuple[str, str]]:
+    """Return (category, item) pairs from a "- Category:\n  - item" bullet list."""
+    pairs: list[tuple[str, str]] = []
+    category: str | None = None
+    for line in section_text.splitlines():
+        if not line.strip():
+            continue
+        stripped = line.strip()
+        if not stripped.startswith(("- ", "* ")):
+            continue
+        body = stripped[2:].strip()
+        indent = len(line) - len(line.lstrip())
+        if indent == 0:
+            category = body[:-1].strip() if body.endswith(":") else body
+        elif category:
+            pairs.append((category, body))
+    return pairs
+
+
+def _extract_actor_records(text: str) -> list[dict[str, Any]]:
+    """Extract actors from the template's numbered "## 6. Actors" section (nested
+    category bullets), falling back to a plain "## Actors" heading with flat bullets.
+    """
+    found: list[dict[str, Any]] = []
+    section_text = _parse_numbered_sections(text).get(6)
+    if section_text:
+        for category, item in _extract_nested_category_items(section_text):
+            found.append({
+                "name": item,
+                "role_type": _ACTOR_CATEGORY_ROLE.get(category.lower(), "AFFECTED_PARTY"),
+                "needs_or_responsibilities": "UNKNOWN",
+                "decision_authority": "UNKNOWN",
+            })
+    if not found:
+        found = _extract_header_items(text, ("actors", "actor"), "name")
+    return found
+
+
+def _extract_use_case_records(text: str) -> list[dict[str, Any]]:
+    return _extract_header_items(text, ("use cases", "use case"), "behavior")
+
+
+_FAILURE_HEADER_RE = re.compile(r'^[-*]\s*failure\s*case\s*\d*\s*:', re.IGNORECASE)
+_FAILURE_STRIP_RE = re.compile(r'^[-*]\s*failure\s*case\s*\d*\s*:?\s*', re.IGNORECASE)
+
+
+def _extract_failure_case_records(text: str) -> list[dict[str, Any]]:
+    """Extract failure cases from the template's numbered "## 12. Failure, Misuse,
+    and Unsafe Cases" section (a decision-like header + labeled continuation
+    lines), falling back to a plain "## Failure Cases" heading with flat bullets.
+    """
+    found: list[dict[str, Any]] = []
+    section_text = _parse_numbered_sections(text).get(12)
+    if section_text:
+        current: dict[str, Any] | None = None
+        for line in section_text.splitlines():
+            stripped = line.strip()
+            if _FAILURE_HEADER_RE.match(stripped):
+                if current:
+                    found.append(current)
+                current = {
+                    "condition": _FAILURE_STRIP_RE.sub("", stripped).strip(),
+                    "required_safe_behavior": "UNKNOWN",
+                    "recovery_or_abstention": "UNKNOWN",
+                    "evidence_needed": "UNKNOWN",
+                }
+            elif current and stripped.lower().startswith("- required safe behavior"):
+                current["required_safe_behavior"] = re.sub(r'^-\s*required safe behavior\s*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+            elif current and stripped.lower().startswith("- recovery"):
+                current["recovery_or_abstention"] = re.sub(r'^-\s*recovery[^:]*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+            elif current and stripped.lower().startswith("- evidence needed"):
+                current["evidence_needed"] = re.sub(r'^-\s*evidence needed\s*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+        if current:
+            found.append(current)
+    if not found:
+        found = _extract_header_items(text, ("failure cases", "failure case"), "condition")
+    return found
+
+
+def _split_subsections(section_text: str) -> dict[str, str]:
+    """Split a numbered section's body into ### sub-sections keyed by lowercase title."""
+    subsections: dict[str, str] = {}
+    current_title: str | None = None
+    current_lines: list[str] = []
+    for line in section_text.splitlines():
+        match = re.match(r'^#{2,4}\s+(.+)$', line)
+        if match:
+            if current_title is not None:
+                subsections[current_title] = "\n".join(current_lines).strip()
+            current_title = match.group(1).strip().lower()
+            current_lines = []
+        elif current_title is not None:
+            current_lines.append(line)
+    if current_title is not None:
+        subsections[current_title] = "\n".join(current_lines).strip()
+    return subsections
+
+
+def _extract_labeled_field(section_text: str, *label_variants: str) -> str | None:
+    """Find a "- Label: answer" or "- Label:\n  - sub-bullet" bullet and return its answer text."""
+    lines = section_text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith(("- ", "* ")):
+            continue
+        body = stripped[2:].strip()
+        body_lower = body.lower()
+        for label in label_variants:
+            label_lower = label.lower()
+            if not body_lower.startswith(label_lower):
+                continue
+            rest = body[len(label):].lstrip()
+            if rest.startswith((":", "?")):
+                rest = rest[1:].strip()
+            if rest:
+                return rest
+            base_indent = len(line) - len(line.lstrip())
+            sub_items: list[str] = []
+            cursor = index + 1
+            while cursor < len(lines):
+                next_line = lines[cursor]
+                if not next_line.strip():
+                    cursor += 1
+                    continue
+                next_indent = len(next_line) - len(next_line.lstrip())
+                if next_indent <= base_indent:
+                    break
+                next_stripped = next_line.strip()
+                if next_stripped.startswith(("- ", "* ")):
+                    sub_items.append(next_stripped[2:].strip())
+                cursor += 1
+            return "; ".join(sub_items) if sub_items else None
+    return None
+
+
+def _extract_field_from_section(text: str, section_num: int, *label_variants: str) -> str | None:
+    section_text = _parse_numbered_sections(text).get(section_num)
+    return _extract_labeled_field(section_text, *label_variants) if section_text else None
+
+
+def _extract_bullet_list_from_subsection(text: str, section_num: int, subsection_alias: str) -> str | None:
+    section_text = _parse_numbered_sections(text).get(section_num)
+    if not section_text:
+        return None
+    for title, content in _split_subsections(section_text).items():
+        if subsection_alias in title:
+            items = [line.strip()[2:].strip() for line in content.splitlines() if line.strip().startswith(("- ", "* "))]
+            items = [item for item in items if item]
+            if items:
+                return "; ".join(items)
+    return None
+
+
+def _extract_non_functional_requirements(text: str) -> list[tuple[dict[str, Any], str]]:
+    """Extract non-functional requirements from a "### Non-Functional Requirements" subsection.
+
+    Category labels are top-level bullets (e.g. "- Performance:"); the actual
+    requirement statements are their indented sub-bullets.
+    """
+    found: list[tuple[dict[str, Any], str]] = []
+    for section_text in _parse_numbered_sections(text).values():
+        for title, content in _split_subsections(section_text).items():
+            if "non-functional" not in title and "non functional" not in title:
+                continue
+            category: str | None = None
+            for line in content.splitlines():
+                if not line.strip():
+                    continue
+                stripped = line.strip()
+                if not stripped.startswith(("- ", "* ")):
+                    continue
+                body = stripped[2:].strip()
+                indent = len(line) - len(line.lstrip())
+                if indent == 0:
+                    if ":" in body:
+                        label, rest = body.split(":", 1)
+                        category = label.strip()
+                        rest = rest.strip()
+                        if rest:
+                            found.append(({
+                                "category": category.upper(),
+                                "requirement": rest,
+                                "measurement": "UNKNOWN",
+                                "source": "pre-artifacts",
+                                "status": "PROPOSED",
+                            }, "SECTION_MATCH"))
+                    else:
+                        category = body
+                elif category:
+                    found.append(({
+                        "category": category.upper(),
+                        "requirement": body,
+                        "measurement": "UNKNOWN",
+                        "source": "pre-artifacts",
+                        "status": "PROPOSED",
+                    }, "SECTION_MATCH"))
+    return found
+
+
+def _extract_evidence_items(text: str) -> list[tuple[dict[str, Any], str]]:
+    """Extract evidence-ledger candidates from an "Evidence and Validation" style section."""
+    found: list[tuple[dict[str, Any], str]] = []
+    for section_text in _parse_numbered_sections(text).values():
+        section_title = section_text.split("\n")[0] if section_text else ""
+        if "evidence" not in section_title.lower():
+            continue
+        current_label: str | None = None
+        for line in section_text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(("- ", "* ")):
+                continue
+            indent = len(line) - len(line.lstrip())
+            body = stripped[2:].strip()
+            if indent == 0:
+                current_label = body[:-1].strip() if body.endswith(":") else body
+                continue
+            if current_label and current_label.lower() in ("existing evidence", "tests, docs, logs, or artifacts"):
+                # "Existing evidence" describes something the human reported
+                # having informally observed (e.g. a listening test) — PARTIAL
+                # is more accurate than NOT_RUN. "Tests, docs, logs, or
+                # artifacts" genuinely states what was NOT supplied/inspected,
+                # so NOT_RUN stays correct there.
+                is_reported_observation = current_label.lower() == "existing evidence"
+                found.append(({
+                    "claim_tested": "UNKNOWN",
+                    "evidence_type": current_label,
+                    "exact_source_or_command": body,
+                    "expected_result": "UNKNOWN",
+                    "observed_result": body,
+                    "result": "PARTIAL" if is_reported_observation else "NOT_RUN",
+                    "date": "UNKNOWN",
+                    "limitations": "Reported in the pre-artifacts source; not independently re-verified" if is_reported_observation else "Nothing was supplied or inspected for this item",
+                }, "SECTION_MATCH"))
+    return found
+
+
+def _extract_constraints(text: str) -> list[dict[str, Any]]:
+    """Extract constraints from the template's numbered "## 8. Constraints" section."""
+    section_text = _parse_numbered_sections(text).get(8)
+    if not section_text:
+        return []
+    return [{
+        "category": category,
+        "constraint": item,
+        "enforcement": "UNKNOWN",
+        "evidence_or_status": "Reported in the pre-artifacts source",
+        "owner": "Project/product owner",
+    } for category, item in _extract_nested_category_items(section_text)]
+
+
+_ASSUMPTION_HEADER_RE = re.compile(r'^[-*]\s*assumption\s*\d*\s*:', re.IGNORECASE)
+_ASSUMPTION_STRIP_RE = re.compile(r'^[-*]\s*assumption\s*\d*\s*:?\s*', re.IGNORECASE)
+
+
+def _extract_assumptions(text: str) -> list[dict[str, Any]]:
+    """Extract assumptions from the template's numbered "## 11. Assumptions" section."""
+    section_text = _parse_numbered_sections(text).get(11)
+    found: list[dict[str, Any]] = []
+    if not section_text:
+        return found
+    current: dict[str, Any] | None = None
+    for line in section_text.splitlines():
+        stripped = line.strip()
+        if _ASSUMPTION_HEADER_RE.match(stripped):
+            if current:
+                found.append(current)
+            current = {
+                "assumption": _ASSUMPTION_STRIP_RE.sub("", stripped).strip(),
+                "impact_if_wrong": "UNKNOWN",
+                "validation_method": "UNKNOWN",
+                "owner": "Project/product owner",
+                "status": "OPEN",
+            }
+        elif current and stripped.lower().startswith("- why it matters"):
+            current["impact_if_wrong"] = re.sub(r'^-\s*why it matters\s*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+        elif current and stripped.lower().startswith("- how it might be validated"):
+            current["validation_method"] = re.sub(r'^-\s*how it might be validated\s*:?\s*', '', stripped, flags=re.IGNORECASE).strip()
+    if current:
+        found.append(current)
+    return found
+
+
+def _extract_components(text: str) -> list[dict[str, Any]]:
+    """Extract architecture components from the "Key components:" bullets in the
+    template's numbered "## 15. Architecture / System Context" section."""
+    section_text = _parse_numbered_sections(text).get(15)
+    if not section_text:
+        return []
+    found: list[dict[str, Any]] = []
+    for category, item in _extract_nested_category_items(section_text):
+        if category.lower() != "key components":
+            continue
+        name, sep, responsibility = item.partition(":")
+        found.append({
+            "component": name.strip() if sep else item,
+            "responsibility": responsibility.strip() if sep else item,
+            "inputs": "UNKNOWN",
+            "outputs": "UNKNOWN",
+            "state_owner": "UNKNOWN",
+            "source_evidence": "pre-artifacts architecture section",
+            "confidence": "MEDIUM",
+        })
+    return found
+
+
+def _extract_external_dependencies(text: str) -> list[dict[str, Any]]:
+    """Extract external dependencies from the "External dependencies:" bullets in
+    the template's numbered "## 15. Architecture / System Context" section."""
+    section_text = _parse_numbered_sections(text).get(15)
+    if not section_text:
+        return []
+    found: list[dict[str, Any]] = []
+    for category, item in _extract_nested_category_items(section_text):
+        if category.lower() != "external dependencies":
+            continue
+        found.append({
+            "dependency": item,
+            "owner": "UNKNOWN",
+            "required_behavior": "UNKNOWN",
+            "availability": "UNKNOWN",
+            "failure_impact": "UNKNOWN",
+        })
+    return found
+
+
+def seed_from_pre_artifacts(path: str) -> dict[str, Any]:
+    text = Path(path).read_text(encoding="utf-8")
+    seeded = {"source_path": path, "seeded_at": now(), "answers": {}, "records": {}}
+
+    def add_seed(qid: str, value: Any, state: str = "PROVIDED") -> None:
+        score, label, priority = _seed_confidence(qid, value, text)
+        seeded["answers"][qid] = {
+            "value": value,
+            "state": state,
+            "source_type": "SOURCE_ARTIFACT",
+            "source_reference": path,
+            "respondent": "agent",
+            "confidence_score": score,
+            "confidence_label": label,
+            "review_priority": priority,
+            "confidence_basis": "Deterministic section and keyword matching from the pre-artifacts source",
+        }
+
+    def add_seed_or_unknown(qid: str, value: str | None) -> None:
+        add_seed(qid, value, "PROVIDED") if value else add_seed(qid, "UNKNOWN", "UNKNOWN")
+
+    project_name = None
+    for line in text.splitlines():
+        if "- Project name:" in line:
+            project_name = line.split(":", 1)[1].strip()
+            break
+    add_seed_or_unknown("PKG-001", project_name)
+
+    # A pre-artifacts package is, by definition, discovery-stage input; the
+    # keyword checks below only affect confidence scoring, not this default.
+    add_seed("PKG-002", "DISCOVERY")
+
+    # PKG-003..PKG-006 describe the ArtPkg package itself (owner, respondent,
+    # workspace, snapshot), not the project under discussion. A generic
+    # discovery document has no truthful way to answer these, so they are
+    # left UNKNOWN rather than guessed.
+    add_seed("PKG-003", "UNKNOWN", "UNKNOWN")
+    add_seed("PKG-004", "UNKNOWN", "UNKNOWN")
+    add_seed("PKG-005", "UNKNOWN", "UNKNOWN")
+    add_seed("PKG-006", "UNKNOWN", "UNKNOWN")
+    add_seed_or_unknown("PKG-008", _extract_field_from_section(text, 1, "Primary goal") or _extract_field_from_section(text, 1, "Short description"))
+    add_seed_or_unknown("PKG-009", _extract_field_from_section(text, 16, "Boundary statement"))
+
+    # No pre-artifacts discovery document can itself grant implementation
+    # authority; apply_conditionals() derives AUT-002..AUT-007-SCOPE as
+    # NOT_APPLICABLE once AUT-001 is recorded as NOT_EVALUATED below, so they
+    # are intentionally not seeded here.
+    add_seed("AUT-001", "NOT_EVALUATED")
+
+    add_seed_or_unknown("OVR-001", _extract_field_from_section(text, 2, "What problem is being solved?"))
+    add_seed_or_unknown("OVR-002", _extract_field_from_section(text, 3, "Desired result or observable outcome"))
+    add_seed_or_unknown("BND-001", _extract_bullet_list_from_subsection(text, 5, "in scope"))
+    add_seed_or_unknown("BND-002", _extract_bullet_list_from_subsection(text, 5, "out of scope"))
+
+    restricted_answer = _extract_field_from_section(text, 19, "Does this project involve sensitive data, credentials, regulated information, or restricted content?")
+    if restricted_answer:
+        add_seed("SEC-001", "YES" if restricted_answer.lower().startswith("yes") else "NO")
+        if restricted_answer.lower().startswith("yes"):
+            safeguards = _extract_field_from_section(text, 19, "If yes, what safeguards are required?")
+            redaction = _extract_field_from_section(text, 19, "Are any redaction or access controls needed?")
+            categories = "; ".join(part for part in (safeguards, redaction) if part)
+            add_seed_or_unknown("SEC-001-CATEGORIES", categories)
+    else:
+        add_seed("SEC-001", "UNKNOWN", "UNKNOWN")
+
+    # PKG-007 (source of truth) is, by construction, the pre-artifacts file this
+    # package was seeded from; PKG-007-AUTH records that it was human-supplied,
+    # not that any project authority formally designated it.
+    add_seed("PKG-007", path)
+    add_seed("PKG-007-AUTH", "Supplied by the requesting user as the discovery source for this package; not a formally designated authoritative source of truth")
+
+    add_seed_or_unknown("OVR-003", _extract_field_from_section(text, 4, "What is already working?"))
+    add_seed_or_unknown("OVR-004", _extract_field_from_section(text, 4, "What is partially complete?"))
+    add_seed_or_unknown("OVR-005", _extract_field_from_section(text, 4, "What is blocked or uncertain?"))
+    add_seed_or_unknown("OVR-007", _extract_field_from_section(text, 14, "What is still unverified?"))
+    add_seed_or_unknown("OVR-008", _extract_field_from_section(text, 18, "Proposed next outcome"))
+
+    def merge_records(section: str, extracted: list[tuple[dict[str, Any], str]]) -> None:
+        if extracted:
+            seeded["records"].setdefault(section, [])
+            for record, basis in extracted:
+                _add_seed_record(seeded, section, record, text, basis)
+
+    def merge_plain_records(section: str, extracted: list[dict[str, Any]]) -> None:
+        if extracted:
+            seeded["records"].setdefault(section, [])
+            for record in extracted:
+                _add_seed_record(seeded, section, record, text)
+
+    merge_records("functional_requirements", _extract_functional_requirements(text))
+    merge_records("non_functional_requirements", _extract_non_functional_requirements(text))
+    merge_records("risks", _extract_risks(text))
+    merge_records("decisions", _extract_decisions(text))
+    merge_records("evidence", _extract_evidence_items(text))
+    merge_plain_records("questions", _extract_open_questions(text))
+    merge_plain_records("actors", _extract_actor_records(text))
+    merge_plain_records("use_cases", _extract_use_case_records(text))
+    merge_plain_records("failure_cases", _extract_failure_case_records(text))
+    merge_plain_records("constraints", _extract_constraints(text))
+    merge_plain_records("assumptions", _extract_assumptions(text))
+    merge_plain_records("components", _extract_components(text))
+    merge_plain_records("external_dependencies", _extract_external_dependencies(text))
+
+    return seeded
+
+
+def merge_seed_records(document: dict[str, Any], seed: dict[str, Any]) -> dict[str, list[str]]:
+    """Add deterministically extracted repeated records from a seed into the document.
+
+    Mirrors how seeded single-value answers are already merged directly via
+    set_answer(): every record lands as SOURCE_ARTIFACT-provenance, PROVIDED
+    state so a human can review, edit, or delete it before generation rather
+    than having to retype everything the extractor already found.
+    """
+    created: dict[str, list[str]] = {}
+    for section, records in seed.get("records", {}).items():
+        if section not in RECORD_FIELDS:
+            continue
+        for record in records:
+            record_id = add_record(document, section, record["fields"], source_type="SOURCE_ARTIFACT")
+            stored = find_record(document, record_id)
+            stored["source_reference"] = seed.get("source_path")
+            for meta in ("confidence_score", "confidence_label", "review_priority", "confidence_basis"):
+                if meta in record:
+                    stored[meta] = record[meta]
+            created.setdefault(section, []).append(record_id)
+    document["updated"] = now()
+    return created
+
 
 def migrate_v01_to_v02(document: dict[str, Any]) -> dict[str, Any]:
     if document.get("schema_version") != LEGACY_SCHEMA_VERSION:
@@ -458,9 +1427,72 @@ def redact_fields(fields: dict[str, Any], restricted: bool) -> dict[str, Any]:
     if not restricted: return copy.deepcopy(fields)
     return {key: ("[REDACTED:RESTRICTED_CONTENT]" if any(word in key.lower() for word in ("content", "payload", "secret", "token", "key", "password")) else value) for key, value in fields.items()}
 
+def _is_placeholder_example_row(line: str) -> bool:
+    """True for a template table row that is purely illustrative (every cell is
+    either an example ID like ACT-001 or a `<placeholder>`), so it can be
+    dropped once real, populated record tables are appended instead."""
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return False
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    if not cells:
+        return False
+    for cell in cells:
+        if re.fullmatch(r"[A-Z]+-\d{3}", cell) or re.fullmatch(r"`<[^`]*>`", cell):
+            continue
+        return False
+    return True
+
+
 def render_package(document: dict[str, Any], template_path: str, validation: dict[str, Any]) -> str:
-    template = Path(template_path).read_text(encoding="utf-8"); replacements = {"<name>": _value(document, "PKG-001", "UNKNOWN"), "<person or team>": _value(document, "PKG-003", "UNKNOWN"), "<person or agent>": _value(document, "PKG-004", "UNKNOWN"), "<DRAFT / READY_FOR_REVIEW / ACCEPTED / SUPERSEDED / BLOCKED>": validation["status"], "<path / URL / identifier>": _value(document, "PKG-005", "UNKNOWN"), "<commit, tag, release, digest, or date>": _value(document, "PKG-006", "UNKNOWN")}
-    for old, new in replacements.items(): template = template.replace(old, safe_text(new))
+    template = Path(template_path).read_text(encoding="utf-8")
+
+    def val(qid: str) -> str:
+        return safe_text(_value(document, qid, "UNKNOWN"))
+
+    stop_conditions = "; ".join(_field(record, "condition") for record in _records(document, "stop_conditions")) or "UNKNOWN"
+
+    # Placeholders that appear exactly once, or that repeat with the same
+    # intended value every time.
+    single_replacements = {
+        "<name>": val("PKG-001"),
+        "<discovery / design / implementation handoff / review / closeout>": val("PKG-002"),
+        "<DRAFT / READY_FOR_REVIEW / ACCEPTED / SUPERSEDED / BLOCKED>": safe_text(validation["status"]),
+        "<person or team>": val("PKG-003"),
+        "<person or agent>": val("PKG-004"),
+        "<path / URL / identifier>": val("PKG-005"),
+        "<commit, tag, release, digest, or date>": val("PKG-006"),
+        "<artifact and location>": val("PKG-007"),
+        "<authorized scope / NONE / NOT EVALUATED>": val("AUT-001"),
+        "<checkpoint and status>": val("HND-001"),
+        "<what it covers>": val("PKG-008"),
+        "<snapshot or date>": val("PKG-006"),
+        "<important exclusions or limitations>": val("PKG-009"),
+        "<What problem is being solved, for whom, and why it matters.>": val("OVR-001"),
+        "<Observable outcome, not merely an activity or technology choice.>": val("OVR-002"),
+        "<validated work>": val("OVR-003"),
+        "<current bounded work>": val("OVR-004"),
+        "<blocker and owner>": val("OVR-005"),
+        "<explicit non-scope>": val("OVR-006"),
+        "<claims still requiring evidence>": val("OVR-007"),
+        "<One independently testable next outcome.>": val("OVR-008"),
+        "<observable success>": val("OUT-001"),
+        "<observable failure or unacceptable trade-off>": val("OUT-002"),
+        "<condition requiring pause and human review>": safe_text(stop_conditions),
+        "<one bounded action>": val("HND-007"),
+        "<decision / NONE>": val("HND-007"),
+    }
+    for old, new in single_replacements.items(): template = template.replace(old, new)
+
+    # Placeholders that repeat with genuinely different intended values at
+    # each occurrence — replace one at a time, in template order.
+    template = template.replace("<ID / NONE>", val("AUT-008"), 1)
+    template = template.replace("<ID / NONE>", safe_text(document.get("parent_package_id") or "NONE"), 1)
+    template = template.replace("<YYYY-MM-DD>", safe_text(str(document.get("created", "UNKNOWN"))[:10]), 1)
+    template = template.replace("<YYYY-MM-DD>", safe_text(str(document.get("updated", "UNKNOWN"))[:10]), 1)
+
+    template = "\n".join(line for line in template.splitlines() if not _is_placeholder_example_row(line))
+
     lines = [template.rstrip(), "", "---", "", "## Generated normalized answers", "", f"- Schema: `{SCHEMA_VERSION}`", f"- Template digest: `{document.get('template_version', 'UNKNOWN')}`", f"- Package status: `{validation['status']}`", ""]
     for qid in sorted(document.get("answers", {})):
         item = document["answers"][qid]; lines.append(f"- **{qid}**: {safe_text(item.get('value'))} (`{item.get('state')}`, `{item.get('source_type')}`)")
@@ -516,13 +1548,31 @@ def run_validated_command(command: str, cwd: str, execute: bool = False, allowed
     if command not in (allowed_commands or set()): return {"result": "REJECTED", "reason_code": "COMMAND_NOT_ALLOWLISTED"}
     completed = subprocess.run(shlex.split(command), cwd=cwd, capture_output=True, text=True, timeout=60, check=False); return {"result": "PASS" if completed.returncode == 0 else "FAIL", "exit_code": completed.returncode, "stdout": completed.stdout[-4000:], "stderr": completed.stderr[-4000:], "source_type": "RUNTIME_EVIDENCE"}
 
-def interactive_start(path: str, resume: bool = False) -> int:
+def interactive_start(path: str, resume: bool = False, pre_artifacts_path: str | None = None) -> int:
     answer_path = Path(path)
     if resume:
         document = load_answers(path)
     else:
-        base = answer_path.parent; template = base / "reusable_artifacts_package_template.md"; alternate = base / "reusable_artifacts_package_template (1).md"; template = template if template.exists() else alternate
+        base = answer_path.parent
+        template = resolve_template_path(base)
         document = new_answers(str(template), str(base))
+    if pre_artifacts_path:
+        pre_path = Path(pre_artifacts_path).expanduser().resolve()
+        if pre_path.exists():
+            seed = seed_from_pre_artifacts(str(pre_path))
+            for qid, item in seed["answers"].items():
+                set_answer(document, qid, item["value"], item["state"], item["source_type"], item["source_reference"])
+                if "confidence_score" in item:
+                    document["answers"][qid]["confidence_score"] = item["confidence_score"]
+                    document["answers"][qid]["confidence_label"] = item["confidence_label"]
+                    document["answers"][qid]["review_priority"] = item["review_priority"]
+                    document["answers"][qid]["confidence_basis"] = item["confidence_basis"]
+            created_records = merge_seed_records(document, seed)
+            print(f"Seeded questionnaire from pre-artifacts file: {pre_path}")
+            if created_records:
+                total = sum(len(ids) for ids in created_records.values())
+                print(f"Merged {total} extracted record(s) into the answer set for human review: " + ", ".join(f"{section}={len(ids)}" for section, ids in sorted(created_records.items())))
+            print(render_seed_summary(seed))
     qids = list(QUESTION_CATALOG); index = 0
     while index < len(qids):
         qid = qids[index]; question = QUESTION_CATALOG[qid]
@@ -553,12 +1603,24 @@ def interactive_start(path: str, resume: bool = False) -> int:
         save_answers(document, path); index += 1
     print(json.dumps(validate_answers(document), indent=2)); return 0
 
+def start_intake_ui(argv: list[str]) -> int:
+    import artpkg_intake_server
+
+    return artpkg_intake_server.main(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__); sub = parser.add_subparsers(dest="command", required=True); start = sub.add_parser("start"); start.add_argument("--answers", default="artifacts_package_answers.json"); resume = sub.add_parser("resume"); resume.add_argument("--answers", required=True); validate = sub.add_parser("validate"); validate.add_argument("--answers", required=True); generate_parser = sub.add_parser("generate"); generate_parser.add_argument("--answers", required=True); generate_parser.add_argument("--yes", action="store_true"); args = parser.parse_args(argv)
-    if args.command == "start": return interactive_start(args.answers)
+    argv = list(argv if argv is not None else sys.argv[1:])
+    if argv and argv[0] == "intake-ui":
+        return start_intake_ui(argv[1:])
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    start = sub.add_parser("start"); start.add_argument("--answers", default="artifacts_package_answers.json"); start.add_argument("--pre-artifacts", default=None); resume = sub.add_parser("resume"); resume.add_argument("--answers", required=True); resume.add_argument("--pre-artifacts", default=None); validate = sub.add_parser("validate"); validate.add_argument("--answers", required=True); generate_parser = sub.add_parser("generate"); generate_parser.add_argument("--answers", required=True); generate_parser.add_argument("--yes", action="store_true"); args = parser.parse_args(argv)
+    if args.command == "start": return interactive_start(args.answers, resume=False, pre_artifacts_path=args.pre_artifacts)
     document = load_answers(args.answers)
     if args.command == "validate": print(json.dumps(validate_answers(document), indent=2)); return 0
-    if args.command == "resume": return interactive_start(args.answers, resume=True)
+    if args.command == "resume": return interactive_start(args.answers, resume=True, pre_artifacts_path=args.pre_artifacts)
     try: paths = generate(document, overwrite=args.yes)
     except FileExistsError as exc: print(str(exc), file=sys.stderr); return 2
     print("\n".join(str(path) for path in paths)); return 0

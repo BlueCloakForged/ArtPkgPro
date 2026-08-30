@@ -25,6 +25,23 @@ answers are recorded only; they are not executed by the package generator.
 The optional command runner rejects destructive commands and requires explicit
 execution by its caller. Inspection is not performed by this implementation.
 
+## Local intake UI
+
+Use `intake-ui` for browser-assisted review of pre-artifacts input. The UI
+creates a local intake session, shows review queues, and can generate an
+Archify readiness projection for review. ArtPkg validation remains the only
+package readiness calculation.
+
+```text
+python tools/artifacts_package_questionnaire.py intake-ui --workspace . --port 8765 --open
+```
+
+The UI is ArtPkg-owned. It does not grant approval, implementation authority,
+execution authority, publication authority, deployment authority, or permission
+to process sensitive content. Local sessions are written under `.artpkg/` and
+are gitignored because they can contain project-specific or restricted
+information.
+
 The answer file is atomically replaced after each accepted answer. Repeated
 records use stable IDs such as `ACT-001`, `FR-001`, and `EVD-001`; deleted IDs
 are retained so later records are never renumbered. `UNKNOWN`, `NONE`, and

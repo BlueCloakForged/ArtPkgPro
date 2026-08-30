@@ -39,6 +39,310 @@ class QuestionnaireTests(unittest.TestCase):
         self.assertEqual("UNKNOWN", self.document["answers"]["PKG-006"]["state"])
         self.assertEqual("NONE", self.document["answers"]["AUT-007"]["value"])
 
+    def test_pre_artifacts_seed_generates_confidence_and_summary(self):
+        sample_path = self.root / "pre_artifacts.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "## 1. Project Summary\n"
+            "- Project name: Offline Support Call Intelligence\n"
+            "- Primary goal: Produce accurate, reviewable support-call records without sending customer audio externally.\n\n"
+            "## 2. Problem Statement\n"
+            "- What problem is being solved? Support technicians need a dependable record of customer calls.\n\n"
+            "## 5. Scope\n"
+            "### In Scope\n"
+            "- Single-seat pilot on one Windows 11 workstation\n\n"
+            "### Out of Scope\n"
+            "- Production deployment and external cloud processing\n\n"
+            "## 16. Authority and Decision Boundaries\n"
+            "- This file is discovery context for ArtPkg; it is not an approved implementation contract.\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        self.assertEqual("Offline Support Call Intelligence", seeded["answers"]["PKG-001"]["value"])
+        self.assertEqual("DISCOVERY", seeded["answers"]["PKG-002"]["value"])
+        self.assertGreaterEqual(seeded["answers"]["PKG-002"]["confidence_score"], 80)
+        self.assertIn("review_priority", seeded["answers"]["PKG-002"])
+        summary = q.render_seed_summary(seeded)
+        self.assertIn("Confidence score", summary)
+        self.assertIn("PKG-002", summary)
+
+    def test_pre_artifacts_seed_extracts_repeated_records(self):
+        sample_path = self.root / "pre_artifacts_records.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "## 7. Requirements\n"
+            "### Functional Requirements\n"
+            "- FR-01: The pilot shall capture technician and customer audio separately.\n"
+            "- FR-02: The technician shall review and approve the transcript.\n\n"
+            "## 9. Risks\n"
+            "- Risk 1: Playback contamination may create false customer content.\n"
+            "- Risk 2: Automatic call detection may start or end incorrectly.\n\n"
+            "## 10. Decisions\n"
+            "- Decision 1: Customer conversation processing shall remain local.\n"
+            "  - Rationale: Privacy and offline operation are primary product goals.\n"
+            "  - Decision owner: Product owner.\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        self.assertGreater(len(seeded["records"]["functional_requirements"]), 0)
+        self.assertGreater(len(seeded["records"]["risks"]), 0)
+        self.assertGreater(len(seeded["records"]["decisions"]), 0)
+        self.assertIn("requirement", seeded["records"]["functional_requirements"][0]["fields"])
+        self.assertIn("risk", seeded["records"]["risks"][0]["fields"])
+
+    def test_seed_summary_prioritizes_low_confidence_items_first(self):
+        seeded = {
+            "source_path": "example.md",
+            "seeded_at": q.now(),
+            "answers": {
+                "PKG-003": {"value": "UNKNOWN", "state": "UNKNOWN", "confidence_score": 40, "confidence_label": "LOW", "review_priority": "HIGH"},
+                "PKG-002": {"value": "DISCOVERY", "state": "PROVIDED", "confidence_score": 95, "confidence_label": "HIGH", "review_priority": "LOW"},
+            },
+            "records": {},
+        }
+        summary = q.render_seed_summary(seeded)
+        self.assertLess(summary.index("PKG-003"), summary.index("PKG-002"))
+        self.assertIn("Needs human review first", summary)
+
+    def test_seed_summary_includes_explicit_accept_edit_reject_checklist(self):
+        sample_path = self.root / "pre_artifacts_checklist.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "- Project name: Example Pilot\n"
+            "- Package owner: Unknown\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        summary = q.render_seed_summary(seeded)
+        self.assertIn("[ ] Accept", summary)
+        self.assertIn("[ ] Edit", summary)
+        self.assertIn("[ ] Reject", summary)
+        self.assertIn("Action checklist", summary)
+
+    def test_seed_summary_includes_final_decision_totals(self):
+        sample_path = self.root / "pre_artifacts_decision_totals.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "- Project name: Example Pilot\n"
+            "- Package owner: Unknown\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        summary = q.render_seed_summary(seeded)
+        self.assertIn("## Final decision summary", summary)
+        self.assertIn("Accepted:", summary)
+        self.assertIn("Edited:", summary)
+        self.assertIn("Rejected:", summary)
+
+    def test_pre_artifacts_seed_extracts_heading_based_sections(self):
+        sample_path = self.root / "pre_artifacts_headings.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "## Actors\n"
+            "- Actor 1: Support technician\n"
+            "- Actor 2: Customer\n\n"
+            "## Use Cases\n"
+            "- Use case 1: Review a call after it completes\n"
+            "- Use case 2: Export a summary for follow-up\n\n"
+            "## Failure Cases\n"
+            "- Failure case 1: Loopback capture includes unrelated desktop audio\n"
+            "- Failure case 2: Automatic call start fails and the operator must recover manually\n\n"
+            "## Open Questions\n"
+            "- Question 1: Which call-state signal is acceptable for automation?\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        self.assertGreater(len(seeded["records"].get("actors", [])), 0)
+        self.assertGreater(len(seeded["records"].get("use_cases", [])), 0)
+        self.assertGreater(len(seeded["records"].get("failure_cases", [])), 0)
+        self.assertGreater(len(seeded["records"].get("questions", [])), 0)
+
+    def test_template_resolution_falls_back_to_repo_root(self):
+        base_dir = self.root / "outside"; base_dir.mkdir()
+        resolved = q.resolve_template_path(str(base_dir))
+        self.assertTrue(Path(resolved).exists())
+        self.assertIn("reusable_artifacts_package_template", Path(resolved).name)
+
+    def test_merge_seed_records_writes_records_into_document(self):
+        seed = {
+            "source_path": "example.md",
+            "records": {
+                "risks": [{
+                    "fields": {"risk": "Playback contamination", "likelihood": "MEDIUM", "impact": "HIGH", "detection": "d", "mitigation_or_control": "m", "owner": "o", "residual_status": "OPEN"},
+                    "confidence_score": 82, "confidence_label": "MEDIUM", "review_priority": "MEDIUM", "confidence_basis": "SECTION_MATCH",
+                }],
+            },
+        }
+        created = q.merge_seed_records(self.document, seed)
+        self.assertEqual(1, len(created["risks"]))
+        stored = q.find_record(self.document, created["risks"][0])
+        self.assertEqual("Playback contamination", stored["fields"]["risk"])
+        self.assertEqual("SOURCE_ARTIFACT", stored["source_type"])
+        self.assertEqual("example.md", stored["source_reference"])
+        self.assertEqual(82, stored["confidence_score"])
+
+    def test_pre_artifacts_seed_extracts_problem_statement_and_scope(self):
+        sample_path = self.root / "pre_artifacts_fields.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "## 1. Project Summary\n"
+            "- Project name: Example Pilot\n"
+            "- Primary goal: Produce a reviewable local record without cloud processing.\n\n"
+            "## 2. Problem Statement\n"
+            "- What problem is being solved? Technicians need a dependable call record.\n\n"
+            "## 3. Intended Outcome\n"
+            "- Desired result or observable outcome: A technician reviews an approved transcript.\n\n"
+            "## 5. Scope\n"
+            "### In Scope\n"
+            "- Single-seat pilot capture.\n"
+            "### Out of Scope\n"
+            "- Production deployment.\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        self.assertEqual("Technicians need a dependable call record.", seeded["answers"]["OVR-001"]["value"])
+        self.assertEqual("A technician reviews an approved transcript.", seeded["answers"]["OVR-002"]["value"])
+        self.assertIn("Single-seat pilot capture.", seeded["answers"]["BND-001"]["value"])
+        self.assertIn("Production deployment.", seeded["answers"]["BND-002"]["value"])
+        self.assertIn("Produce a reviewable local record", seeded["answers"]["PKG-008"]["value"])
+
+    def test_pre_artifacts_seed_leaves_unresolvable_package_metadata_unknown(self):
+        sample_path = self.root / "pre_artifacts_no_metadata.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "## 1. Project Summary\n"
+            "- Project name: Example Pilot\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        for qid in ("PKG-003", "PKG-004", "PKG-005", "PKG-006"):
+            self.assertEqual("UNKNOWN", seeded["answers"][qid]["state"])
+        self.assertNotIn("AUT-002", seeded["answers"])
+        self.assertNotIn("AUT-004", seeded["answers"])
+
+    def test_pre_artifacts_seed_does_not_fabricate_authority_when_none_claimed(self):
+        sample_path = self.root / "pre_artifacts_authority.md"
+        sample_path.write_text("# Pre-Artifacts Package\n\n- Project name: Example Pilot\n", encoding="utf-8")
+        seed = q.seed_from_pre_artifacts(str(sample_path))
+        document = q.new_answers(str(self.template), str(self.root), "Tester")
+        for qid, item in seed["answers"].items():
+            q.set_answer(document, qid, item["value"], item["state"], item["source_type"], item["source_reference"])
+        self.assertEqual("NOT_APPLICABLE", document["answers"]["AUT-004"]["state"])
+        self.assertEqual("DERIVED_BY_SCRIPT", document["answers"]["AUT-004"]["source_type"])
+
+    def test_pre_artifacts_seed_extracts_non_functional_requirements_and_evidence(self):
+        sample_path = self.root / "pre_artifacts_nfr_evidence.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "## 7. Requirements\n"
+            "### Non-Functional Requirements\n"
+            "- Performance:\n"
+            "  - Audio capture shall have priority over transcription.\n"
+            "- Security:\n"
+            "  - The pilot Web UI shall bind to localhost only.\n\n"
+            "## 14. Evidence and Validation\n"
+            "- Existing evidence:\n"
+            "  - A user-observed OBS test confirmed dual capture was audible.\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        nfrs = seeded["records"]["non_functional_requirements"]
+        self.assertEqual(2, len(nfrs))
+        self.assertEqual("PERFORMANCE", nfrs[0]["fields"]["category"])
+        evidence = seeded["records"]["evidence"]
+        self.assertEqual(1, len(evidence))
+        self.assertIn("OBS test", evidence[0]["fields"]["exact_source_or_command"])
+
+    def test_decision_date_or_status_field_is_captured(self):
+        text = (
+            "## 10. Decisions\n"
+            "- Decision 1: Keep processing local.\n"
+            "  - Rationale: Privacy.\n"
+            "  - Decision owner: Product owner.\n"
+            "  - Date or status: Confirmed 2026-08-29.\n"
+        )
+        found = q._extract_decisions(text)
+        self.assertEqual(1, len(found))
+        self.assertEqual("Confirmed 2026-08-29.", found[0][0]["date"])
+
+    def test_pre_artifacts_seed_extracts_numbered_actors_and_failure_cases(self):
+        sample_path = self.root / "pre_artifacts_numbered.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "## 6. Actors\n"
+            "- Users:\n"
+            "  - Pilot support technician.\n"
+            "- External systems or services:\n"
+            "  - 3CX call platform.\n\n"
+            "## 12. Failure, Misuse, and Unsafe Cases\n"
+            "- Failure case 1: A device disconnects mid-call.\n"
+            "  - Required safe behavior: Do not silently drop the session.\n"
+            "  - Recovery or abstention behavior: Pause and prompt for reselection.\n"
+            "  - Evidence needed: Device-removal test.\n",
+            encoding="utf-8",
+        )
+        actors = q._extract_actor_records(open(sample_path, encoding="utf-8").read())
+        self.assertEqual(2, len(actors))
+        self.assertEqual("USER", actors[0]["role_type"])
+        self.assertEqual("EXTERNAL_SYSTEM", actors[1]["role_type"])
+        failures = q._extract_failure_case_records(open(sample_path, encoding="utf-8").read())
+        self.assertEqual(1, len(failures))
+        self.assertEqual("A device disconnects mid-call.", failures[0]["condition"])
+        self.assertEqual("Do not silently drop the session.", failures[0]["required_safe_behavior"])
+        self.assertEqual("Pause and prompt for reselection.", failures[0]["recovery_or_abstention"])
+        self.assertEqual("Device-removal test.", failures[0]["evidence_needed"])
+
+    def test_pre_artifacts_seed_extracts_constraints_assumptions_components_dependencies(self):
+        text = (
+            "## 8. Constraints\n"
+            "- Technical constraints:\n"
+            "  - Target OS is Windows 11.\n\n"
+            "## 11. Assumptions\n"
+            "- Assumption 1: Devices are correctly enumerated.\n"
+            "  - Why it matters: Wrong device selection breaks capture.\n"
+            "  - How it might be validated: Manual device inventory check.\n\n"
+            "## 15. Architecture / System Context\n"
+            "- Key components:\n"
+            "  - Capture Service: Captures audio from selected devices.\n"
+            "- External dependencies:\n"
+            "  - 3CX for call routing.\n"
+        )
+        constraints = q._extract_constraints(text)
+        self.assertEqual(1, len(constraints))
+        self.assertEqual("Technical constraints", constraints[0]["category"])
+        self.assertEqual("Target OS is Windows 11.", constraints[0]["constraint"])
+
+        assumptions = q._extract_assumptions(text)
+        self.assertEqual(1, len(assumptions))
+        self.assertEqual("Devices are correctly enumerated.", assumptions[0]["assumption"])
+        self.assertEqual("Wrong device selection breaks capture.", assumptions[0]["impact_if_wrong"])
+        self.assertEqual("Manual device inventory check.", assumptions[0]["validation_method"])
+
+        components = q._extract_components(text)
+        self.assertEqual(1, len(components))
+        self.assertEqual("Capture Service", components[0]["component"])
+        self.assertEqual("Captures audio from selected devices.", components[0]["responsibility"])
+
+        deps = q._extract_external_dependencies(text)
+        self.assertEqual(1, len(deps))
+        self.assertEqual("3CX for call routing.", deps[0]["dependency"])
+
+    def test_pre_artifacts_seed_extracts_restricted_content_flag(self):
+        sample_path = self.root / "pre_artifacts_sec.md"
+        sample_path.write_text(
+            "# Pre-Artifacts Package\n\n"
+            "## 19. Sensitive or Restricted Content\n"
+            "- Does this project involve sensitive data, credentials, regulated information, or restricted content? Yes. Customer voices and names.\n"
+            "- If yes, what safeguards are required?\n"
+            "  - Local-only processing.\n"
+            "- Are any redaction or access controls needed?\n"
+            "  - Yes, exact categories unresolved.\n",
+            encoding="utf-8",
+        )
+        seeded = q.seed_from_pre_artifacts(str(sample_path))
+        self.assertEqual("YES", seeded["answers"]["SEC-001"]["value"])
+        self.assertIn("Local-only processing", seeded["answers"]["SEC-001-CATEGORIES"]["value"])
+
     def test_unsupported_authority_and_attestation_block(self):
         q.set_answer(self.document, "AUT-001", "IMPLEMENTATION_WITHIN_EXACT_SCOPE")
         result = q.validate_answers(self.document)
@@ -296,6 +600,23 @@ class QuestionnaireTests(unittest.TestCase):
         text = q.render_package(self.document, str(self.template), q.validate_answers(self.document))
         self.assertIn("A \\| &lt;b&gt;", text)
         self.assertIn("# Package", text)
+
+    def test_intake_ui_command_delegates_to_server(self):
+        called = {}
+
+        def fake_main(argv):
+            called["argv"] = argv
+            return 0
+
+        original = q.start_intake_ui
+        try:
+            q.start_intake_ui = fake_main
+            result = q.main(["intake-ui", "--workspace", str(self.root), "--port", "9999"])
+        finally:
+            q.start_intake_ui = original
+
+        self.assertEqual(0, result)
+        self.assertEqual(["--workspace", str(self.root), "--port", "9999"], called["argv"])
 
 
 if __name__ == "__main__":
