@@ -17,6 +17,7 @@ gateway in `tools/artpkg_v03.py` requires `jsonschema`; install it with
 python tools/artifacts_package_questionnaire.py start --answers answers.json
 python tools/artifacts_package_questionnaire.py resume --answers answers.json
 python tools/artifacts_package_questionnaire.py validate --answers answers.json
+python tools/artifacts_package_questionnaire.py apply-addendum --answers answers.json --addendum addendum.md --generate --yes
 python tools/artifacts_package_questionnaire.py generate --answers answers.json --yes
 ```
 
@@ -64,6 +65,17 @@ Generation produces `artifacts_package_answers.json`,
 `artifacts_package.md`, and `artifacts_package_validation.md`. The latter
 contains errors, warnings, blocking IDs, and Gate A through Gate D results.
 Restricted field names are redacted with a content-free reason code.
+
+## Decision-resolution addenda
+
+`apply-addendum` ingests a human-supplied decision-resolution addendum after an
+initial package has been created. It preserves existing records, adds new
+decision/phase/acceptance/question records with addendum provenance, records the
+addendum itself as a supporting artifact, and regenerates the package when
+`--generate` is supplied. PH-001 addenda remain blocked at the human checkpoint:
+the target repository, capture stack, duration/thresholds, approver, and
+explicit implementation authorization must still be answered before coding
+readiness.
 
 ## Coverage and lifecycle contract
 

@@ -89,6 +89,20 @@ Validation reports:
 
 A package can be generated while it is `DRAFT` or `BLOCKED`, but validation must never be treated as human approval.
 
+## Apply a decision-resolution addendum
+
+Use `apply-addendum` when a human-supplied addendum closes or narrows package
+decisions after the first ArtPkg pass.
+
+```text
+python tools/artifacts_package_questionnaire.py apply-addendum --answers artifacts_package_answers.json --addendum C:\Users\vin\Downloads\artpkg-decision-resolution-addendum-v0.2.md --generate --yes
+```
+
+The command preserves the addendum as supporting evidence, records accepted
+decisions as human declarations, keeps `AUT-001` at `NOT_EVALUATED`, and keeps
+PH-001 blocked until the remaining P1 questions and explicit implementation
+authorization are recorded.
+
 ## Generate the package
 
 ```text

@@ -1162,6 +1162,183 @@ def merge_seed_records(document: dict[str, Any], seed: dict[str, Any]) -> dict[s
     return created
 
 
+def _slug_record_exists(document: dict[str, Any], record_id: str) -> bool:
+    return any(record.get("id") == record_id for records in document.get("records", {}).values() for record in records)
+
+
+def _add_addendum_record(document: dict[str, Any], section: str, record_id: str, fields: dict[str, Any], source_type: str, source_reference: str, result_bucket: dict[str, str]) -> None:
+    if _slug_record_exists(document, record_id):
+        result_bucket[record_id] = "skipped_existing"
+        return
+    add_record(document, section, fields, source_type=source_type, record_id=record_id, source_reference=source_reference)
+    result_bucket[record_id] = "added"
+
+
+def _section_text(text: str, heading_number: int) -> str:
+    match = re.search(rf"(?ms)^##\s+{heading_number}\.\s+.*?(?=^##\s+\d+\.|\Z)", text)
+    return match.group(0) if match else ""
+
+
+def _heading_blocks(text: str, prefix: str) -> list[tuple[str, str, str]]:
+    blocks: list[tuple[str, str, str]] = []
+    pattern = re.compile(rf"(?ms)^###\s+({re.escape(prefix)}[A-Z0-9-]*)\s+[—-]\s+(.+?)\n(.*?)(?=^###\s+|\Z)")
+    for match in pattern.finditer(text):
+        blocks.append((match.group(1).strip(), match.group(2).strip(), match.group(3).strip()))
+    return blocks
+
+
+def _bullet_value(block: str, label: str) -> str:
+    match = re.search(rf"(?mi)^-\s*{re.escape(label)}\s*:\s*(.+)$", block)
+    return match.group(1).strip() if match else ""
+
+
+def _status_value(value: str, default: str) -> str:
+    return (value or default).strip().rstrip(".")
+
+
+def _bullets_after_heading(text: str, heading: str) -> str:
+    match = re.search(rf"(?ms)^###\s+{re.escape(heading)}\s*\n(.*?)(?=^###\s+|^##\s+|\Z)", text)
+    if not match:
+        return ""
+    items = [line.strip()[2:].strip() for line in match.group(1).splitlines() if line.strip().startswith(("- ", "* "))]
+    return "\n".join(items)
+
+
+def _parse_markdown_table(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells and not all(set(cell) <= {"-", " "} for cell in cells):
+            rows.append(cells)
+    return rows
+
+
+def _question_id_and_title(cell: str) -> tuple[str, str]:
+    match = re.match(r"([A-Z0-9]+(?:-[A-Z0-9]+)*-\d{3}|P1-Q\d+|Q-\d{3})\s+[—-]\s+(.+)", cell.strip())
+    return (match.group(1), match.group(2).strip()) if match else (cell.strip(), cell.strip())
+
+
+def _listed_ids(value: str) -> list[str]:
+    return sorted(set(re.findall(r"\b(?:FR|NFR)-\d{3}\b", value)))
+
+
+def _included_requirement_records(value: str) -> list[tuple[str, str, dict[str, Any]]]:
+    records: list[tuple[str, str, dict[str, Any]]] = []
+    for line in value.splitlines():
+        match = re.match(r"((?:FR|NFR)-\d{3})\s*:\s*(.+)", line.strip())
+        if not match:
+            continue
+        record_id, requirement = match.group(1), match.group(2).strip()
+        if record_id.startswith("FR-"):
+            records.append((record_id, "functional_requirements", {
+                "requirement": requirement,
+                "source": "PH-001 decision-resolution addendum",
+                "priority": "MUST",
+                "status": "ACCEPTED",
+                "decision_owner": "Project/product owner",
+            }))
+        else:
+            records.append((record_id, "non_functional_requirements", {
+                "category": "PH-001",
+                "requirement": requirement,
+                "measurement": "Threshold required" if "threshold" in requirement.lower() else "Evidence required",
+                "source": "PH-001 decision-resolution addendum",
+                "status": "ACCEPTED",
+            }))
+    return records
+
+
+def apply_decision_resolution_addendum(document: dict[str, Any], addendum_path: str) -> dict[str, Any]:
+    source = str(Path(addendum_path).expanduser().resolve())
+    text = Path(source).read_text(encoding="utf-8")
+    result = {"decisions": {}, "phases": {}, "requirements": {}, "acceptance_criteria": {}, "questions": {}, "artifacts": {}, "blocking_questions": []}
+
+    _add_addendum_record(document, "artifacts", "ART-ADD-001", {
+        "exact_path_or_reference": source,
+        "purpose": "Human-supplied decision-resolution addendum",
+        "provenance": "HUMAN_DECLARATION",
+        "authority": "SUPPORTING",
+        "authority_basis": "Supplies post-ArtPkg human decisions while preserving implementation authority boundaries",
+        "status": "CURRENT",
+        "last_validated_date": now()[:10],
+    }, "HUMAN_DECLARATION", source, result["artifacts"])
+
+    for record_id, title, block in _heading_blocks(_section_text(text, 2) + "\n" + _section_text(text, 5), "DEC-"):
+        _add_addendum_record(document, "decisions", record_id, {
+            "decision": _bullet_value(block, "Decision") or title,
+            "rationale": _bullet_value(block, "Rationale"),
+            "decider": _bullet_value(block, "Decider") or "Project/product owner",
+            "date": "2026-08-29",
+            "evidence": source,
+            "status": _status_value(_bullet_value(block, "Status"), "ACCEPTED"),
+        }, "HUMAN_DECLARATION", source, result["decisions"])
+
+    phase_text = _section_text(text, 3)
+    requirements = _bullets_after_heading(phase_text, "Requirements included")
+    out_of_scope = _bullets_after_heading(phase_text, "Explicitly outside PH-001")
+    deliverables = _bullets_after_heading(phase_text, "Required deliverables")
+    failure_behavior = _bullets_after_heading(phase_text, "Required failure behavior")
+    stop_conditions = _bullets_after_heading(phase_text, "Required stop conditions")
+    for record_id, section, fields in _included_requirement_records(requirements):
+        _add_addendum_record(document, section, record_id, fields, "HUMAN_DECLARATION", source, result["requirements"])
+    for record_id, title, block in _heading_blocks(phase_text, "PH-"):
+        _add_addendum_record(document, "phases", record_id, {
+            "title_and_outcome": f"{title}: {_bullet_value(block, 'Single outcome')}".strip(": "),
+            "status": _status_value(_bullet_value(block, "Status"), "Scope accepted; execution not yet authorized"),
+            "requirement_ids": _listed_ids(requirements),
+            "in_scope": requirements,
+            "out_of_scope": out_of_scope,
+            "validation": "\n".join(part for part in (deliverables, failure_behavior) if part),
+            "human_review_level": "APPROVAL_REQUIRED",
+            "rollback_or_recovery": stop_conditions,
+            "authority_source": "Execution not authorized by this addendum",
+        }, "HUMAN_DECLARATION", source, result["phases"])
+
+    for record_id, _title, block in _heading_blocks(_section_text(text, 4), "AC-"):
+        _add_addendum_record(document, "acceptance_criteria", record_id, {
+            "requirement_ids": "PH-001",
+            "pass_condition": _bullet_value(block, "Pass condition"),
+            "validation_method": _bullet_value(block, "Validation"),
+            "expected_evidence": _bullet_value(block, "Evidence"),
+            "evidence_ids": "EVIDENCE_REQUIRED",
+            "approver": "P1-Q5",
+            "status": _status_value(_bullet_value(block, "Status"), "PROPOSED"),
+        }, "HUMAN_DECLARATION", source, result["acceptance_criteria"])
+
+    for cells in _parse_markdown_table(_section_text(text, 7))[1:]:
+        if len(cells) < 4:
+            continue
+        record_id, title = _question_id_and_title(cells[0])
+        _add_addendum_record(document, "questions", record_id, {
+            "question": title,
+            "why_it_matters": cells[2],
+            "decision_owner": cells[3],
+            "needed_by": "PH-001 coding readiness" if cells[2].lower().startswith("yes") else "Later checkpoint",
+            "current_disposition": cells[1],
+        }, "HUMAN_DECLARATION", source, result["questions"])
+
+    for record_id, _title, block in _heading_blocks(_section_text(text, 8), "P1-Q"):
+        _add_addendum_record(document, "questions", record_id, {
+            "question": _bullet_value(block, "Question"),
+            "why_it_matters": _bullet_value(block, "Why it matters"),
+            "decision_owner": "Project/product owner",
+            "needed_by": "Before PH-001 implementation readiness",
+            "current_disposition": "OPEN",
+        }, "HUMAN_DECLARATION", source, result["questions"])
+        result["blocking_questions"].append(record_id)
+
+    set_answer(document, "AUT-001", "NOT_EVALUATED", "PROVIDED", "HUMAN_DECLARATION", source)
+    set_harness_mode(document, False)
+    set_answer(document, "HND-001", "BLOCKED_AT_HUMAN_CHECKPOINT", "PROVIDED", "HUMAN_DECLARATION", source)
+    set_answer(document, "HND-007", "ArtPkg update and focused human review of P1-Q1 through P1-Q5; do not implement PH-001 until explicit execution authorization is recorded.", "PROVIDED", "HUMAN_DECLARATION", source)
+    set_answer(document, "HND-008", None, "UNKNOWN", "HUMAN_DECLARATION", source)
+    set_answer(document, "HND-009", _section_text(text, 10).strip() or "Use the decision-resolution addendum fresh-session instruction.", "PROVIDED", "HUMAN_DECLARATION", source)
+    return result
+
+
 def migrate_v01_to_v02(document: dict[str, Any]) -> dict[str, Any]:
     if document.get("schema_version") != LEGACY_SCHEMA_VERSION:
         raise ValueError("migration requires an artifacts answer file with schema_version 0.1")
@@ -1244,10 +1421,13 @@ def _next_id(document: dict[str, Any], section: str) -> str:
     while f"{prefix}-{number:03d}" in used: number += 1
     return f"{prefix}-{number:03d}"
 
-def add_record(document: dict[str, Any], section: str, fields: dict[str, Any], source_type: str = "HUMAN_DECLARATION") -> str:
+def add_record(document: dict[str, Any], section: str, fields: dict[str, Any], source_type: str = "HUMAN_DECLARATION", record_id: str | None = None, source_reference: str | None = None) -> str:
     if section not in ID_PREFIXES and section not in RECORD_FIELDS: raise ValueError(f"unknown repeated section: {section}")
-    record_id = _next_id(document, section); stamp = now()
-    document["records"].setdefault(section, []).append({"id": record_id, "fields": copy.deepcopy(fields), "source_type": source_type, "source_reference": None, "respondent": document.get("respondent", ""), "created": stamp, "last_edit": stamp}); document["updated"] = now(); return record_id
+    record_id = record_id or _next_id(document, section)
+    if record_id in {record["id"] for records in document.get("records", {}).values() for record in records}:
+        raise ValueError(f"record already exists: {record_id}")
+    stamp = now()
+    document["records"].setdefault(section, []).append({"id": record_id, "fields": copy.deepcopy(fields), "source_type": source_type, "source_reference": source_reference, "respondent": document.get("respondent", ""), "created": stamp, "last_edit": stamp}); document["updated"] = now(); return record_id
 
 def collect_record(document: dict[str, Any], section: str, input_fn=input, output_fn=print) -> str | None:
     """Collect one record one field at a time; return None for done/cancel."""
@@ -1315,7 +1495,7 @@ def validate_document_shape(document: dict[str, Any]) -> None:
     for section in ID_PREFIXES:
         if not isinstance(document["records"].get(section), list): raise ValueError(f"records.{section} must be a list")
         for record in document["records"][section]:
-            if not re.fullmatch(r"[A-Z]+-\d{3}", str(record.get("id", ""))): raise ValueError("record has invalid stable ID")
+            if not re.fullmatch(r"(?:[A-Z0-9]+(?:-[A-Z0-9]+)*-\d{3}|P1-Q\d+)", str(record.get("id", ""))): raise ValueError("record has invalid stable ID")
 
 def save_answers(document: dict[str, Any], path: str) -> None:
     validate_document_shape(document); target = Path(path); target.parent.mkdir(parents=True, exist_ok=True); payload = json.dumps(document, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
@@ -1372,6 +1552,9 @@ def validate_answers(document: dict[str, Any]) -> dict[str, Any]:
             if not any(ref in evidence_by_id and _field(evidence_by_id[ref], "result") == "PASS" for ref in refs): errors.append(f"{criterion['id']}: passed criterion lacks PASS evidence"); blockers.append(criterion["id"])
     for phase in _records(document, "phases"):
         if _field(phase, "status") in {"ACCEPTED", "CLOSED"} and not _field(phase, "authority_source"): errors.append(f"{phase['id']}: accepted or closed phase lacks authority source"); blockers.append(phase["id"])
+        if phase.get("id") == "PH-001" and "execution not yet authorized" in str(_field(phase, "status")).lower():
+            errors.append("PH-001: scope accepted but implementation execution is not authorized")
+            blockers.extend(["PH-001", "HND-008", "P1-Q1", "P1-Q2", "P1-Q3", "P1-Q4", "P1-Q5"])
     for conflict in _records(document, "conflicts"):
         if _field(conflict, "status") == "OPEN": errors.append(f"{conflict['id']}: unresolved material conflict"); blockers.append(conflict["id"])
     if any(item.get("state") in {"UNKNOWN", "DEFERRED", "TO_BE_INSPECTED"} for item in answers.values()): warnings.append("material answers remain unresolved")
@@ -1616,11 +1799,21 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    start = sub.add_parser("start"); start.add_argument("--answers", default="artifacts_package_answers.json"); start.add_argument("--pre-artifacts", default=None); resume = sub.add_parser("resume"); resume.add_argument("--answers", required=True); resume.add_argument("--pre-artifacts", default=None); validate = sub.add_parser("validate"); validate.add_argument("--answers", required=True); generate_parser = sub.add_parser("generate"); generate_parser.add_argument("--answers", required=True); generate_parser.add_argument("--yes", action="store_true"); args = parser.parse_args(argv)
+    start = sub.add_parser("start"); start.add_argument("--answers", default="artifacts_package_answers.json"); start.add_argument("--pre-artifacts", default=None); resume = sub.add_parser("resume"); resume.add_argument("--answers", required=True); resume.add_argument("--pre-artifacts", default=None); validate = sub.add_parser("validate"); validate.add_argument("--answers", required=True); generate_parser = sub.add_parser("generate"); generate_parser.add_argument("--answers", required=True); generate_parser.add_argument("--yes", action="store_true"); addendum = sub.add_parser("apply-addendum"); addendum.add_argument("--answers", required=True); addendum.add_argument("--addendum", required=True); addendum.add_argument("--generate", action="store_true"); addendum.add_argument("--yes", action="store_true"); args = parser.parse_args(argv)
     if args.command == "start": return interactive_start(args.answers, resume=False, pre_artifacts_path=args.pre_artifacts)
     document = load_answers(args.answers)
     if args.command == "validate": print(json.dumps(validate_answers(document), indent=2)); return 0
     if args.command == "resume": return interactive_start(args.answers, resume=True, pre_artifacts_path=args.pre_artifacts)
+    if args.command == "apply-addendum":
+        result = apply_decision_resolution_addendum(document, args.addendum)
+        save_answers(document, args.answers)
+        if args.generate:
+            try: paths = generate(document, overwrite=args.yes)
+            except FileExistsError as exc: print(str(exc), file=sys.stderr); return 2
+            print("\n".join(str(path) for path in paths))
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     try: paths = generate(document, overwrite=args.yes)
     except FileExistsError as exc: print(str(exc), file=sys.stderr); return 2
     print("\n".join(str(path) for path in paths)); return 0

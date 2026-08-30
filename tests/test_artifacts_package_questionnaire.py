@@ -66,6 +66,144 @@ class QuestionnaireTests(unittest.TestCase):
         self.assertIn("Confidence score", summary)
         self.assertIn("PKG-002", summary)
 
+    def test_apply_decision_resolution_addendum_preserves_authority_boundaries(self):
+        addendum = self.root / "addendum.md"
+        addendum.write_text(
+            "# ArtPkg Decision-Resolution Addendum\n\n"
+            "## 2. Confirmed First-Phase Decision\n\n"
+            "### DEC-015 - First coding phase is capture foundation\n\n"
+            "- Decision: Option A, Capture Foundation, is approved as the first bounded coding phase.\n"
+            "- Decider: Project/product owner.\n"
+            "- Status: Accepted for phase scoping.\n"
+            "- Rationale: Dual-stream source capture must be proven independently.\n\n"
+            "### DEC-016 - Synthetic test data only\n\n"
+            "- Decision: PH-001 shall use synthetic calls only.\n"
+            "- Status: Accepted.\n\n"
+            "## 3. Proposed Bounded Phase Record\n\n"
+            "### PH-001 - Windows Dual-Stream Capture Validation\n\n"
+            "- Single outcome: Capture utility records technician and customer sources separately.\n"
+            "- Status: Scope accepted; execution not yet authorized.\n\n"
+            "### Required stop conditions\n\n"
+            "- Stop if real customer content is proposed for testing.\n\n"
+            "## 4. Proposed PH-001 Acceptance-Criteria Skeleton\n\n"
+            "### AC-P1-001 - Endpoint enumeration\n\n"
+            "- Pass condition: Intended endpoints are enumerated.\n"
+            "- Validation: Runtime device inventory.\n"
+            "- Evidence: device_inventory.json.\n\n"
+            "### AC-P1-004 - Shared timing and drift\n\n"
+            "- Pass condition: Sources remain aligned within approved tolerance.\n"
+            "- Validation: Compare offsets and durations.\n"
+            "- Evidence: capture metadata.\n"
+            "- Status: THRESHOLD REQUIRED.\n\n"
+            "## 7. Disposition of Existing Open Questions\n\n"
+            "| Question | Disposition after this addendum | Blocks PH-001 coding? | Required owner/action |\n"
+            "| --- | --- | --- | --- |\n"
+            "| Q-001 - Exact 3CX client and version | OPEN; inspect and record from reference workstation | Does not block initial scaffolding | Pilot operator |\n"
+            "| Q-012 - Duration, volume, processing time | PARTIALLY OPEN; PH-001 test duration and capture tolerances still required | Yes, in narrowed PH-001 form | Product owner |\n\n"
+            "## 8. Remaining Questions the ArtPkg Agent Should Ask Now\n\n"
+            "### P1-Q1 - Target repository\n\n"
+            "- Question: Should PH-001 be implemented in a new repository?\n"
+            "- Why it matters: The harness requires an explicit target.\n\n"
+            "### P1-Q5 - Approver and authorization\n\n"
+            "- Question: Which named person or organizational role approves PH-001 scope?\n"
+            "- Why it matters: The package records authority as NOT_EVALUATED.\n\n",
+            encoding="utf-8",
+        )
+        q.add_record(self.document, "decisions", {"decision": "Existing", "status": "ACCEPTED"}, record_id="DEC-015")
+
+        result = q.apply_decision_resolution_addendum(self.document, str(addendum))
+
+        self.assertEqual("NOT_EVALUATED", self.document["answers"]["AUT-001"]["value"])
+        self.assertEqual("BLOCKED_AT_HUMAN_CHECKPOINT", self.document["answers"]["HND-001"]["value"])
+        self.assertEqual("NO", self.document["answers"]["HAR-000"]["value"])
+        self.assertEqual("skipped_existing", result["decisions"]["DEC-015"])
+        self.assertEqual("added", result["decisions"]["DEC-016"])
+        self.assertEqual("added", result["phases"]["PH-001"])
+        self.assertEqual("added", result["acceptance_criteria"]["AC-P1-004"])
+        self.assertIn("P1-Q1", result["blocking_questions"])
+        self.assertIn("P1-Q5", result["blocking_questions"])
+
+        decisions = {record["id"]: record for record in self.document["records"]["decisions"]}
+        phases = {record["id"]: record for record in self.document["records"]["phases"]}
+        criteria = {record["id"]: record for record in self.document["records"]["acceptance_criteria"]}
+        questions = {record["id"]: record for record in self.document["records"]["questions"]}
+        artifacts = {record["fields"]["exact_path_or_reference"]: record for record in self.document["records"]["artifacts"]}
+
+        self.assertEqual("Existing", decisions["DEC-015"]["fields"]["decision"])
+        self.assertEqual("PH-001 shall use synthetic calls only.", decisions["DEC-016"]["fields"]["decision"])
+        self.assertEqual("HUMAN_DECLARATION", decisions["DEC-016"]["source_type"])
+        self.assertEqual("Scope accepted; execution not yet authorized", phases["PH-001"]["fields"]["status"])
+        self.assertEqual("THRESHOLD REQUIRED", criteria["AC-P1-004"]["fields"]["status"])
+        self.assertEqual("OPEN; inspect and record from reference workstation", questions["Q-001"]["fields"]["current_disposition"])
+        self.assertEqual("OPEN", questions["P1-Q1"]["fields"]["current_disposition"])
+        self.assertEqual("SUPPORTING", artifacts[str(addendum.resolve())]["fields"]["authority"])
+
+        validation = q.validate_answers(self.document)
+        self.assertEqual("BLOCKED", validation["status"])
+        self.assertIn("HND-008", validation["blocking_ids"])
+
+    def test_apply_decision_resolution_addendum_creates_phase_requirement_records(self):
+        addendum = self.root / "addendum.md"
+        addendum.write_text(
+            "# ArtPkg Decision-Resolution Addendum\n\n"
+            "## 3. Proposed Bounded Phase Record\n\n"
+            "### PH-001 - Windows Dual-Stream Capture Validation\n\n"
+            "- Single outcome: Capture utility records selected endpoints.\n"
+            "- Status: Scope accepted; execution not yet authorized.\n\n"
+            "### Requirements included\n\n"
+            "- FR-001: Physical Windows 11, one technician, one active session.\n"
+            "- NFR-001: Capture has priority over downstream processing.\n",
+            encoding="utf-8",
+        )
+
+        q.apply_decision_resolution_addendum(self.document, str(addendum))
+        functional = {record["id"]: record for record in self.document["records"]["functional_requirements"]}
+        non_functional = {record["id"]: record for record in self.document["records"]["non_functional_requirements"]}
+        validation = q.validate_answers(self.document)
+
+        self.assertEqual("Physical Windows 11, one technician, one active session.", functional["FR-001"]["fields"]["requirement"])
+        self.assertEqual("Capture has priority over downstream processing.", non_functional["NFR-001"]["fields"]["requirement"])
+        self.assertNotIn("PH-001: invalid cross-reference FR-001", validation["errors"])
+        self.assertNotIn("PH-001: invalid cross-reference NFR-001", validation["errors"])
+
+    def test_apply_addendum_command_writes_answers_and_regenerates_outputs(self):
+        answers = self.root / "answers.json"
+        addendum = self.root / "addendum.md"
+        addendum.write_text(
+            "# ArtPkg Decision-Resolution Addendum\n\n"
+            "## 2. Confirmed First-Phase Decision\n\n"
+            "### DEC-015 - First coding phase is capture foundation\n\n"
+            "- Decision: Option A, Capture Foundation, is approved as the first bounded coding phase.\n"
+            "- Status: Accepted.\n\n"
+            "## 3. Proposed Bounded Phase Record\n\n"
+            "### PH-001 - Windows Dual-Stream Capture Validation\n\n"
+            "- Single outcome: Capture utility records selected endpoints.\n"
+            "- Status: Scope accepted; execution not yet authorized.\n\n"
+            "## 4. Proposed PH-001 Acceptance-Criteria Skeleton\n\n"
+            "### AC-P1-001 - Endpoint enumeration\n\n"
+            "- Pass condition: Endpoints are enumerated.\n"
+            "- Validation: Runtime inventory.\n"
+            "- Evidence: device_inventory.json.\n\n"
+            "## 8. Remaining Questions the ArtPkg Agent Should Ask Now\n\n"
+            "### P1-Q1 - Target repository\n\n"
+            "- Question: What exact path/name is authorized?\n"
+            "- Why it matters: The harness requires an explicit target.\n",
+            encoding="utf-8",
+        )
+        q.save_answers(self.document, str(answers))
+
+        code = q.main(["apply-addendum", "--answers", str(answers), "--addendum", str(addendum), "--generate", "--yes"])
+        loaded = q.load_answers(str(answers))
+        package = self.root / "artifacts_package.md"
+        validation_path = self.root / "artifacts_package_validation.md"
+
+        self.assertEqual(0, code)
+        self.assertTrue(package.exists())
+        self.assertTrue(validation_path.exists())
+        self.assertEqual("BLOCKED_AT_HUMAN_CHECKPOINT", loaded["answers"]["HND-001"]["value"])
+        self.assertIn("PH-001", package.read_text(encoding="utf-8"))
+        self.assertIn("BLOCKED", validation_path.read_text(encoding="utf-8"))
+
     def test_pre_artifacts_seed_extracts_repeated_records(self):
         sample_path = self.root / "pre_artifacts_records.md"
         sample_path.write_text(
