@@ -142,6 +142,7 @@ class ArchifyProjectionTests(unittest.TestCase):
         intake.questionnaire.set_answer(self.session["document"], "AUT-008", "NOT_APPLICABLE", state="NOT_APPLICABLE", source_type="DERIVED_BY_SCRIPT")
         intake.questionnaire.set_answer(self.session["document"], "VAL-001", "TO_BE_INSPECTED", state="TO_BE_INSPECTED", source_type="SOURCE_ARTIFACT")
         intake.questionnaire.set_answer(self.session["document"], "VAL-002", "DEFERRED", state="DEFERRED", source_type="SOURCE_ARTIFACT")
+        intake.questionnaire.save_answers(self.session["document"], self.session["answers_path"])
 
         result = projection.build_readiness_projection(self.session)
         source_answers = {node["archify_id"]: node["source_answers"] for node in result.mapping["nodes"]}
@@ -181,3 +182,62 @@ class ArchifyProjectionTests(unittest.TestCase):
         checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
         self.assertEqual("BLOCKED", checked["status"])
         self.assertIn("EVIDENCE_ELEVATION", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_synchronized_forged_digest(self):
+        result = projection.build_readiness_projection(self.session)
+        forged = "a" * 64
+        result.ir["meta"]["projection_expectations"]["source_artifact_sha256"] = forged
+        result.mapping["inputs"][0]["sha256"] = forged
+        for node in result.mapping["nodes"]:
+            node["source_artifact_sha256"] = forged
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("SOURCE_DIGEST_MISMATCH", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_synchronized_authority_tampering(self):
+        result = projection.build_readiness_projection(self.session)
+        forged_authority = {
+            "value": "IMPLEMENTATION_WITHIN_EXACT_SCOPE",
+            "state": "PROVIDED",
+            "source_type": "SOURCE_ARTIFACT",
+            "source_reference": result.mapping["inputs"][0]["stored_path"],
+        }
+        result.ir["meta"]["projection_expectations"]["authority"] = forged_authority
+        for node in result.mapping["nodes"]:
+            if node["archify_id"] == "authorityState":
+                node["authority_state"] = "IMPLEMENTATION_WITHIN_EXACT_SCOPE"
+                node["source_answers"]["AUT-001"] = forged_authority
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("AUTHORITY_ELEVATION", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_synchronized_evidence_support_tampering(self):
+        result = projection.build_readiness_projection(self.session)
+        result.ir["meta"]["projection_expectations"]["evidence_verified_supported"] = True
+        for node in result.mapping["nodes"]:
+            if node["archify_id"] == "evidenceState":
+                node["answer_state"] = "VERIFIED"
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("EVIDENCE_ELEVATION", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_missing_referenced_source_file(self):
+        result = projection.build_readiness_projection(self.session)
+        Path(result.mapping["inputs"][0]["stored_path"]).unlink()
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("SOURCE_FILE_UNREADABLE", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_missing_referenced_answers_file(self):
+        result = projection.build_readiness_projection(self.session)
+        for item in result.mapping["inputs"]:
+            if item["role"] == "ARTPKG_ANSWERS":
+                Path(item["path"]).unlink()
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("ANSWERS_FILE_UNREADABLE", {issue["code"] for issue in checked["issues"]})

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -160,7 +161,10 @@ def _mapping_for(session: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
         "schema_version": 1,
         "artifact_type": "ARTPKG_ARCHIFY_MAPPING_SIDECAR",
         "status": "DRAFT_REVIEW_ARTIFACT",
-        "inputs": [{"path": source.get("path"), "stored_path": source.get("stored_path"), "sha256": source.get("sha256"), "role": "SOURCE_ARTIFACT"}],
+        "inputs": [
+            {"path": source.get("path"), "stored_path": source.get("stored_path"), "sha256": source.get("sha256"), "role": "SOURCE_ARTIFACT"},
+            {"path": session.get("answers_path"), "role": "ARTPKG_ANSWERS"},
+        ],
         "source_catalog": source_catalog,
         "validation_status": validation.get("status"),
         "projection_rules": [
@@ -275,17 +279,31 @@ def _source_evidence_supports_verified(document: dict[str, Any]) -> bool:
     return False
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     expectations = ir.get("meta", {}).get("projection_expectations", {})
+    source_context = _read_projection_sources(mapping)
+    issues.extend(source_context["issues"])
     component_ids = {component["id"] for component in ir.get("components", [])}
     components_by_id = {component["id"]: component for component in ir.get("components", [])}
     mapped_node_ids = {node.get("archify_id") for node in mapping.get("nodes", [])}
     edge_ids = {edge["id"] for edge in ir.get("connections", []) if "id" in edge}
     mapped_edge_ids = {edge.get("archify_id") for edge in mapping.get("edges", [])}
-    known_records = set(expectations.get("known_artpkg_ids", []))
+    source_document = source_context.get("document")
+    known_records = set(_known_artpkg_ids(source_document)) if isinstance(source_document, dict) else set(expectations.get("known_artpkg_ids", []))
     expected_aggregations = expectations.get("aggregations", {})
-    expected_source_digest = expectations.get("source_artifact_sha256")
+    actual_source_digest = source_context.get("source_digest")
+    expected_source_digest = actual_source_digest or expectations.get("source_artifact_sha256")
+    actual_authority = _source_answer(source_document, "AUT-001") if isinstance(source_document, dict) else None
+    actual_evidence_support = _source_evidence_supports_verified(source_document) if isinstance(source_document, dict) else False
     source_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "SOURCE_ARTIFACT"]
     input_digests = {item.get("sha256") for item in source_inputs}
 
@@ -302,6 +320,8 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
             issues.append({"code": "SOURCE_DIGEST_MALFORMED", "subject": "inputs"})
     if _is_sha256_digest(expected_source_digest) and input_digests != {expected_source_digest}:
         issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "inputs"})
+    if actual_source_digest and expectations.get("source_artifact_sha256") != actual_source_digest:
+        issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "ir.meta"})
     for node in mapping.get("nodes", []):
         archify_id = node.get("archify_id", "UNKNOWN")
         node_digest = node.get("source_artifact_sha256")
@@ -323,18 +343,21 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
             issues.append({"code": "AGGREGATION_METADATA_MISSING", "subject": archify_id})
 
         if archify_id == "authorityState":
-            expected_authority = expectations.get("authority", {})
+            expected_authority = actual_authority or expectations.get("authority", {})
             if (
                 not expected_authority
                 or node.get("authority_state") != expected_authority.get("value")
                 or node.get("source_answers", {}).get("AUT-001") != expected_authority
+                or expectations.get("authority") != expected_authority
             ):
                 issues.append({"code": "AUTHORITY_ELEVATION", "subject": "authorityState"})
         if archify_id == "evidenceState" and _claims_verified_evidence(
             node,
             components_by_id.get("evidenceState", {}),
-            bool(expectations.get("evidence_verified_supported")),
+            actual_evidence_support,
         ):
+            issues.append({"code": "EVIDENCE_ELEVATION", "subject": "evidenceState"})
+        if archify_id == "evidenceState" and expectations.get("evidence_verified_supported") != actual_evidence_support:
             issues.append({"code": "EVIDENCE_ELEVATION", "subject": "evidenceState"})
     for edge in mapping.get("edges", []):
         if edge.get("archify_id") not in edge_ids:
@@ -352,6 +375,32 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
 
 def _is_sha256_digest(value: Any) -> bool:
     return isinstance(value, str) and SHA256_RE.fullmatch(value) is not None
+
+
+def _read_projection_sources(mapping: dict[str, Any]) -> dict[str, Any]:
+    issues: list[dict[str, str]] = []
+    source_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "SOURCE_ARTIFACT"]
+    answers_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "ARTPKG_ANSWERS"]
+    context: dict[str, Any] = {"issues": issues}
+
+    if len(source_inputs) != 1:
+        issues.append({"code": "SOURCE_FILE_UNREADABLE", "subject": "SOURCE_ARTIFACT"})
+    else:
+        source_path = source_inputs[0].get("stored_path")
+        try:
+            context["source_digest"] = _sha256_file(Path(source_path).expanduser().resolve())
+        except (OSError, TypeError, ValueError):
+            issues.append({"code": "SOURCE_FILE_UNREADABLE", "subject": str(source_path)})
+
+    if len(answers_inputs) != 1:
+        issues.append({"code": "ANSWERS_FILE_UNREADABLE", "subject": "ARTPKG_ANSWERS"})
+    else:
+        answers_path = answers_inputs[0].get("path")
+        try:
+            context["document"] = questionnaire.load_answers(str(Path(answers_path).expanduser().resolve()))
+        except (OSError, TypeError, ValueError):
+            issues.append({"code": "ANSWERS_FILE_UNREADABLE", "subject": str(answers_path)})
+    return context
 
 
 def _valid_aggregation(archify_id: str, aggregation: Any, expected_aggregations: dict[str, Any]) -> bool:
