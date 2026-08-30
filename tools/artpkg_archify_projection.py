@@ -49,6 +49,15 @@ def _count_queue(session: dict[str, Any], queue: str) -> int:
     return len(session.get("review_queues", {}).get(queue, []))
 
 
+def _next_action_label(value: Any) -> str:
+    text = str(value or "HUMAN_REVIEW_ONLY")
+    if "P1-Q1" in text and "P1-Q5" in text:
+        return "P1-Q1..P1-Q5 review required"
+    if len(text) > 34:
+        return text[:31].rstrip() + "..."
+    return text
+
+
 def _component(component_id: str, kind: str, label: str, sublabel: str, x: int, y: int, tag: str) -> dict[str, Any]:
     return {"id": component_id, "type": kind, "label": label, "sublabel": sublabel, "pos": [x, y], "size": [168, 70], "tag": tag}
 
@@ -91,7 +100,7 @@ def build_readiness_projection(session: dict[str, Any], output_dir: str | Path |
             _component("acceptanceCriteria", "security", "Acceptance Criteria", "must link requirements to evidence", 760, 300, "CHECK"),
             _component("evidenceState", "messagebus", "Evidence State", f"{evidence_items} evidence-sensitive fields", 500, 470, "NOT PROOF"),
             _component("gateReadiness", "security", "Gate Readiness", gate_summary, 960, 260, validation.get("status", "DRAFT")),
-            _component("nextPermittedAction", "frontend", "Next Action", str(next_action)[:42], 960, 470, "REVIEW ONLY"),
+            _component("nextPermittedAction", "frontend", "Next Action", _next_action_label(next_action), 960, 470, "REVIEW ONLY"),
         ],
         "boundaries": [
             {"kind": "region", "label": "ArtPkg-owned local intake; Archify renders review only", "wraps": ["preArtifacts", "seededDraft", "reviewQueues", "authorityState", "acceptanceCriteria", "evidenceState", "gateReadiness", "nextPermittedAction"], "pad": 26}

@@ -66,6 +66,18 @@ class ArchifyProjectionTests(unittest.TestCase):
         self.assertIn("authorityState", component_ids)
         self.assertIn("reviewQueues", component_ids)
 
+    def test_projection_summarizes_long_next_action_for_readability(self):
+        self.session["document"]["answers"]["HND-007"] = projection.questionnaire.answer(
+            "ArtPkg update and focused human review of P1-Q1 through P1-Q5; do not implement PH-001 until explicit execution authorization is recorded.",
+            "PROVIDED",
+            "HUMAN_DECLARATION",
+        )
+
+        result = projection.build_readiness_projection(self.session)
+        next_action = next(component for component in result.ir["components"] if component["id"] == "nextPermittedAction")
+
+        self.assertEqual("P1-Q1..P1-Q5 review required", next_action["sublabel"])
+
     def test_projection_rejects_unmapped_node(self):
         result = projection.build_readiness_projection(self.session)
         result.mapping["nodes"] = [node for node in result.mapping["nodes"] if node["archify_id"] != "authorityState"]
