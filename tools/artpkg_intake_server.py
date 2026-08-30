@@ -48,6 +48,16 @@ def session_summary(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def resolve_session_dir(session_dir: str, workspace: str | Path) -> Path:
+    intake_sessions_dir = (Path(workspace).expanduser().resolve() / ".artpkg" / "intake_sessions").resolve()
+    resolved_session_dir = Path(session_dir).expanduser().resolve()
+    try:
+        resolved_session_dir.relative_to(intake_sessions_dir)
+    except ValueError as exc:
+        raise ValueError("session directory is outside the configured intake sessions directory") from exc
+    return resolved_session_dir
+
+
 class IntakeHandler(BaseHTTPRequestHandler):
     workspace = Path.cwd()
     template_path: Path | None = None
@@ -71,10 +81,13 @@ class IntakeHandler(BaseHTTPRequestHandler):
             self.wfile.write(html)
             return
         if parsed.path == "/api/session":
-            params = parse_qs(parsed.query)
-            session_dir = params.get("dir", [""])[0]
-            session = artpkg_intake.load_intake_session(session_dir)
-            self._json(200, session_summary(session))
+            try:
+                params = parse_qs(parsed.query)
+                session_dir = resolve_session_dir(params.get("dir", [""])[0], self.workspace)
+                session = artpkg_intake.load_intake_session(session_dir)
+                self._json(200, session_summary(session))
+            except Exception as exc:
+                self._json(400, {"error": str(exc)})
             return
         self._json(404, {"error": "not found"})
 
@@ -95,7 +108,8 @@ class IntakeHandler(BaseHTTPRequestHandler):
                 return
 
             payload = json.loads(body.decode("utf-8") or "{}")
-            session = artpkg_intake.load_intake_session(payload["session_dir"])
+            session_dir = resolve_session_dir(payload["session_dir"], self.workspace)
+            session = artpkg_intake.load_intake_session(session_dir)
             if parsed.path == "/api/session/confirm":
                 artpkg_intake.confirm_answer(session, payload["question_id"], payload.get("reviewer", "UI reviewer"))
                 self._json(200, session_summary(session))

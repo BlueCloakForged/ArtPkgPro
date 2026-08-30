@@ -36,3 +36,22 @@ class IntakeServerTests(unittest.TestCase):
         self.assertNotIn("document", summary)
         self.assertEqual("S", summary["session_id"])
         self.assertEqual(1, summary["queue_counts"]["needs_answer"])
+
+    def test_resolve_session_dir_accepts_workspace_intake_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            session_dir = workspace / ".artpkg" / "intake_sessions" / "session-1"
+            session_dir.mkdir(parents=True)
+
+            resolved = server.resolve_session_dir(str(session_dir), workspace)
+
+            self.assertEqual(session_dir.resolve(), resolved)
+
+    def test_resolve_session_dir_rejects_path_outside_workspace_intake_sessions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            outside_session = Path(temp_dir) / "outside" / "session-1"
+            outside_session.mkdir(parents=True)
+
+            with self.assertRaisesRegex(ValueError, "outside the configured intake sessions directory"):
+                server.resolve_session_dir(str(outside_session), workspace)
