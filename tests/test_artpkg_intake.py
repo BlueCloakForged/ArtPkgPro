@@ -108,3 +108,21 @@ class IntakeSessionTests(unittest.TestCase):
         self.assertEqual("HUMAN_CONFIRMED", reloaded["document"]["answers"]["PKG-001"]["review_disposition"])
         self.assertEqual("HUMAN_REJECTED", reloaded["document"]["answers"]["PKG-003"]["review_disposition"])
         self.assertEqual("Owner must be named by human", reloaded["document"]["answers"]["PKG-003"]["rejection_reason"])
+
+    def test_rejected_sensitive_answers_remain_in_specialist_queues(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+
+        intake.reject_seeded_answer(session, "SEC-001", "Restricted-content answer needs review", "Reviewer")
+        intake.reject_seeded_answer(session, "OVR-007", "Unverified claim needs review", "Reviewer")
+
+        reloaded = intake.load_intake_session(session["session_dir"])
+        authority_ids = {item["id"] for item in reloaded["review_queues"]["authority_sensitive"]}
+        evidence_ids = {item["id"] for item in reloaded["review_queues"]["evidence_sensitive"]}
+
+        self.assertIn("SEC-001", authority_ids)
+        self.assertIn("OVR-007", evidence_ids)

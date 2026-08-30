@@ -135,13 +135,13 @@ def build_review_queues(document: dict[str, Any], seed: dict[str, Any], validati
 
         if disposition == "HUMAN_REJECTED":
             queues["needs_answer"].append(_queue_item(qid, item, "seeded answer was rejected and needs replacement"))
-            continue
-        if state in {"UNKNOWN", "DEFERRED", "TO_BE_INSPECTED"} or qid in blocking_ids:
-            queues["needs_answer"].append(_queue_item(qid, item, "unresolved or blocking answer"))
-        elif disposition == "SEEDED_PENDING_REVIEW" and (score is None or score < 90):
-            queues["needs_confirmation"].append(_queue_item(qid, item, "seeded answer needs human confirmation"))
-        elif disposition == "SEEDED_PENDING_REVIEW":
-            queues["ready_for_quick_review"].append(_queue_item(qid, item, "high-confidence seeded answer"))
+        else:
+            if state in {"UNKNOWN", "DEFERRED", "TO_BE_INSPECTED"} or qid in blocking_ids:
+                queues["needs_answer"].append(_queue_item(qid, item, "unresolved or blocking answer"))
+            elif disposition == "SEEDED_PENDING_REVIEW" and (score is None or score < 90):
+                queues["needs_confirmation"].append(_queue_item(qid, item, "seeded answer needs human confirmation"))
+            elif disposition == "SEEDED_PENDING_REVIEW":
+                queues["ready_for_quick_review"].append(_queue_item(qid, item, "high-confidence seeded answer"))
 
         if _is_authority_sensitive(qid):
             queues["authority_sensitive"].append(_queue_item(qid, item, "authority, scope, safety, or approval-sensitive field"))
