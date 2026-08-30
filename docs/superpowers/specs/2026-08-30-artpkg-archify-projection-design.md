@@ -2,18 +2,18 @@
 
 Date: 2026-08-30
 
-Status: Draft for human review
+Status: Draft for human review; revised to include ArtPkg-owned intake UI
 
 ## Purpose
 
-ArtPkg should use Archify as a visual projection and review layer for package readiness, scope, system context, and evidence reconciliation. ArtPkg remains the semantic source of truth: it owns requirements, authority, provenance, evidence states, validation gates, next permitted action, and human approval boundaries.
+ArtPkg should use Archify as a local visual projection and review layer for package intake, package readiness, scope, system context, and evidence reconciliation. ArtPkg remains the semantic source of truth: it owns uploaded pre-artifacts, questionnaire state, requirements, authority, provenance, evidence states, validation gates, next permitted action, and human approval boundaries.
 
 Archify renders bounded, interactive maps from typed JSON IR. A valid Archify diagram proves the diagram is structurally valid and visually deliverable; it does not prove that an ArtPkg package is complete, approved, implementation-ready, or safe to advance.
 
 The practical review model is:
 
 ```text
-intent + package records + observations + evidence -> traceable views -> targeted human review
+pre-artifacts + intent + package records + observations + evidence -> traceable views -> targeted human review
 ```
 
 This replaces an unsafe model:
@@ -47,17 +47,22 @@ The spike used `example-artpkg-seeded-output.md`, not a canonical `artifacts_pac
 
 ### In Scope
 
-The first official capability should be a read-only ArtPkg projection adapter that:
+The first official capability should be an ArtPkg-owned local intake interface plus a read-only projection adapter that:
 
+- Lets a user upload or select a pre-artifacts Markdown file.
+- Runs ArtPkg-owned parsing/seeding logic.
+- Starts or resumes the ArtPkg questionnaire from the seeded draft.
+- Shows which questionnaire answers still require human input.
+- Groups unanswered, uncertain, authority-sensitive, and evidence-sensitive fields for review.
 - Accepts canonical ArtPkg answers JSON and validation output.
 - Optionally accepts generated package Markdown for display references.
 - Emits a valid Archify JSON IR file.
 - Emits a semantic mapping sidecar.
 - Emits a projection validation report.
-- Invokes local Archify validation and delivery.
+- Invokes local Archify validation and delivery for visual review.
 - Fails closed when records, relationships, digests, or authority semantics are ambiguous.
 
-The first view should be Package Readiness. It answers:
+The first interface flow should begin with Intake Review, then use Package Readiness as the first Archify-backed view. It answers:
 
 1. Why is the package blocked?
 2. What has already been accepted?
@@ -65,11 +70,20 @@ The first view should be Package Readiness. It answers:
 4. What evidence is missing?
 5. What is the next permitted action?
 
+The intake UI should also answer:
+
+1. Which questionnaire fields were seeded from the pre-artifacts file?
+2. Which required fields still need user answers?
+3. Which seeded fields require confirmation before canonical generation?
+4. Which fields are authority-sensitive, privacy-sensitive, or evidence-sensitive?
+5. What is the smallest next review action the user should take?
+
 ### Out of Scope
 
 The first official capability must not:
 
 - Modify Archify schemas.
+- Move the first user interface into Archify.
 - Treat Archify validation as ArtPkg gate evidence.
 - Infer human approval, requirement priority, authority, or risk acceptance.
 - Use an LLM to invent graph relationships.
@@ -77,24 +91,32 @@ The first official capability must not:
 - Advance Pipeline-A, activate a BEC, authorize implementation, or authorize execution.
 - Replace ArtPkg validation.
 - Require the local Archify docs server to be running.
+- Merge ArtPkg and Archify into one project before the ArtPkg-owned workflow proves useful across a full package lifecycle.
 
 ## Architecture
 
-The projection layer has five units:
+The first system has seven units:
 
-1. ArtPkg source loader
-2. ArtPkg semantic normalizer
-3. View projector
-4. Mapping sidecar writer
-5. Archify runner
+1. ArtPkg intake UI
+2. Pre-artifacts upload/select handler
+3. ArtPkg parser/seeder
+4. ArtPkg semantic normalizer
+5. View projector
+6. Mapping sidecar writer
+7. Archify runner
 
 The flow is:
 
 ```text
-ArtPkg answers JSON
+pre-artifacts Markdown
+  -> ArtPkg intake UI
+  -> upload/select handler
+  -> ArtPkg parser/seeder
+  -> questionnaire draft + review queue
+  -> human answers/confirmations
+  -> canonical ArtPkg answers JSON
   + ArtPkg validation report
   + optional package Markdown
-  -> source loader
   -> semantic normalizer
   -> view projector
   -> Archify IR + mapping sidecar + projection report
@@ -102,7 +124,7 @@ ArtPkg answers JSON
   -> human review artifact
 ```
 
-The adapter should live on the ArtPkg side. Archify should remain an external renderer/validator invoked through its documented CLI:
+The intake UI and adapter should live on the ArtPkg side. Archify should remain an external local renderer/validator invoked through its documented CLI:
 
 ```text
 node bin/archify.mjs validate <type> <candidate.json> --quality showcase --json
@@ -117,6 +139,32 @@ C:\Users\vin\AppData\Local\nvm\v20.18.2\node.exe
 ```
 
 ## Components
+
+### ArtPkg Intake UI
+
+Provides the first user interface for processing projects through ArtPkg. It should be local-first and ArtPkg-owned. The UI should let the user upload or select a pre-artifacts file, review seeded questionnaire answers, answer missing fields, confirm or reject seeded values, and see why specific fields matter.
+
+The UI should organize review into queues:
+
+- `Needs answer`: required fields that are missing, `UNKNOWN`, or `DEFERRED` without an owner/checkpoint.
+- `Needs confirmation`: seeded values that are plausible but not yet human-confirmed.
+- `Authority-sensitive`: approval, scope, implementation, deployment, publication, recording, privacy, and special-action questions.
+- `Evidence-sensitive`: claims, acceptance criteria, validation commands, runtime evidence, and negative evidence.
+- `Ready for quick review`: high-confidence fields that are still visible but not blocking the user first.
+
+The UI must not silently convert seeded values into accepted ArtPkg authority. Human confirmation must be explicit and recorded with provenance.
+
+### Pre-Artifacts Upload/Select Handler
+
+Accepts a local Markdown pre-artifacts file selected by the user. It computes a digest, records the source path, rejects unsupported file types, and warns the user not to upload secrets, credentials, private payloads, or regulated personal data unless ArtPkg has an explicit safe handling rule for that content.
+
+The handler should support local file selection first. Drag-and-drop and archive upload can wait until the base lifecycle works.
+
+### ArtPkg Parser/Seeder
+
+Uses ArtPkg-owned deterministic parsing and seeding logic to populate a draft questionnaire. It may propose answers with confidence and source references, but it cannot create authority, approve requirements, accept criteria, or mark evidence as passed.
+
+The parser/seeder should preserve the current CLI behavior where `UNKNOWN`, `NONE`, `NOT_APPLICABLE`, `TO_BE_INSPECTED`, and `DEFERRED` remain distinct.
 
 ### Source Loader
 
@@ -313,12 +361,13 @@ The projection output is a review artifact. It is not an authority artifact unle
 
 ## Questionnaire and Pre-Artifacts Upload Direction
 
-The user wants the questionnaire and pre-artifacts package upload to eventually move through the local Archify copy. This should be a later phase after deterministic projection exists.
+The questionnaire and pre-artifacts upload should first live in ArtPkg. ArtPkg owns the UI, upload/select flow, parser/seeder, questionnaire state, validation, generated package, and approval boundaries. Archify is called locally to render review views that help the user see which questions need answering and why.
 
-The likely future flow is:
+The first official flow is:
 
 ```text
-pre-artifacts upload
+ArtPkg intake UI
+  -> pre-artifacts upload/select
   -> ArtPkg parser/seeder
   -> human review queue
   -> canonical answers JSON
@@ -328,7 +377,9 @@ pre-artifacts upload
   -> generation/approval decision remains outside Archify
 ```
 
-Archify can make the upload/review experience more legible, but it should not become the parser of record or the approval mechanism. The official parser and validator should remain ArtPkg-owned.
+Archify can make the upload/review experience more legible, but it should not become the parser of record or the approval mechanism in the first system. The official parser and validator remain ArtPkg-owned.
+
+If this ArtPkg-owned system proves it can help a user create a full artifacts package through its lifecycle, a later phase may merge the projects and create an Archify-hosted interface that calls into ArtPkg logic. That later phase should require separate approval and a new design because it changes ownership boundaries, packaging, runtime assumptions, and likely the public product surface.
 
 ## Error Handling
 
@@ -336,8 +387,12 @@ The adapter should classify failures as:
 
 - input missing
 - input digest mismatch
+- unsupported upload type
+- unsafe upload content warning unresolved
 - unsupported ArtPkg schema version
 - invalid ArtPkg validation state
+- questionnaire draft persistence failure
+- seeded answer conflict
 - unmapped node
 - unmapped edge
 - stale projection
@@ -374,7 +429,12 @@ Unit tests should cover:
 - unmapped records are counted and reported.
 - Archify validation failure prevents delivered success.
 - visual-check failure is recorded without modifying ArtPkg status.
-- future questionnaire/upload nodes are marked future and out of current scope.
+- any future Archify-hosted merged-interface markers are labeled success-contingent and out of current scope.
+- pre-artifacts upload computes and records source digest.
+- seeded questionnaire answers retain source references and confidence.
+- seeded values require explicit human confirmation before becoming canonical accepted answers.
+- authority-sensitive and evidence-sensitive fields appear in the correct review queues.
+- rejecting a seeded value leaves a durable review disposition rather than deleting uncertainty.
 
 Integration tests should use a small fixture ArtPkg package and run local Archify validation. They should not require network access, publication, deployment, Gortex, or external AI services.
 
@@ -388,19 +448,30 @@ Negative tests are required before production use:
 - unsupported schema field
 - accepted phase without authority source
 - requirement with missing acceptance criterion
+- uploaded pre-artifacts file containing a restricted-content marker
+- seeded authority answer incorrectly treated as human approval
 
 ## Acceptance Criteria
 
 The design is ready for implementation planning when:
 
+- The ArtPkg-owned intake UI boundary is accepted.
 - The Package Readiness view contract is accepted.
 - The sidecar mapping contract is accepted.
 - Fail-closed rules are accepted.
-- The future questionnaire/upload path is confirmed as later-phase work.
+- The later Archify-hosted merged interface is confirmed as success-contingent future work.
 - The local Archify invocation strategy is accepted.
 - Test expectations include semantic negative tests, not only render checks.
 
-The implementation is successful when a reviewer can open the generated HTML and identify, within a few minutes:
+The implementation is successful when a user can upload or select a pre-artifacts file, begin the questionnaire, and identify, within a few minutes:
+
+1. which fields still require answers,
+2. which seeded answers require confirmation,
+3. which fields are authority-sensitive or evidence-sensitive,
+4. why the package is blocked,
+5. what action is permitted next.
+
+The Archify-backed readiness view remains successful when a reviewer can open the generated HTML and identify, within a few minutes:
 
 1. why the package is blocked,
 2. what is accepted,
@@ -413,11 +484,13 @@ while every displayed fact and relationship traces back to ArtPkg records, sourc
 ## Open Questions
 
 1. Should projection outputs live beside generated packages or under a dedicated `visualizations/` subdirectory?
-2. Should ArtPkg expose projection through the existing CLI as `visualize`, or keep it as a separate tool until stable?
+2. Should the intake UI be a small local web app, a desktop browser app served by ArtPkg, or a lightweight terminal-plus-browser hybrid?
 3. Should visual-check be required for every generated map or only for release/package artifacts?
 4. What is the canonical validation input shape: Markdown report only, JSON validation report, or both?
 5. How should the adapter discover the local Archify path: config value, environment variable, CLI flag, or default search?
+6. Where should draft questionnaire state live while the user is still reviewing seeded answers?
+7. Which confidence threshold moves a seeded answer from `Needs confirmation` to `Ready for quick review`?
 
 ## Recommendation
 
-Proceed to implementation planning for a read-only Package Readiness projection adapter. Keep it narrow: canonical ArtPkg answers plus validation report in, Archify IR plus sidecar plus receipts out. Defer questionnaire/pre-artifacts upload through Archify until the deterministic projection contract is implemented and tested.
+Proceed to implementation planning for an ArtPkg-owned local intake UI with a narrow Package Readiness projection adapter. Keep the first slice practical: pre-artifacts Markdown in, seeded questionnaire draft plus review queues out, canonical ArtPkg validation preserved, Archify IR plus sidecar plus receipts generated for review. Defer any Archify-hosted merged interface until the ArtPkg-owned workflow proves it can carry a user through a full artifacts package lifecycle.
