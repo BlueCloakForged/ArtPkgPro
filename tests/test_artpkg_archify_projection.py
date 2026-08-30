@@ -150,3 +150,34 @@ class ArchifyProjectionTests(unittest.TestCase):
         self.assertEqual({"value": "NOT_APPLICABLE", "state": "NOT_APPLICABLE"}, {key: source_answers["authorityState"]["AUT-008"][key] for key in ("value", "state")})
         self.assertEqual({"value": "TO_BE_INSPECTED", "state": "TO_BE_INSPECTED"}, {key: source_answers["evidenceState"]["VAL-001"][key] for key in ("value", "state")})
         self.assertEqual({"value": "DEFERRED", "state": "DEFERRED"}, {key: source_answers["evidenceState"]["VAL-002"][key] for key in ("value", "state")})
+
+    def test_projection_rejects_malformed_digest(self):
+        result = projection.build_readiness_projection(self.session)
+        result.mapping["inputs"][0]["sha256"] = "not-a-sha256"
+        for node in result.mapping["nodes"]:
+            node["source_artifact_sha256"] = "not-a-sha256"
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("SOURCE_DIGEST_MALFORMED", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_self_consistent_authority_tampering(self):
+        result = projection.build_readiness_projection(self.session)
+        for node in result.mapping["nodes"]:
+            if node["archify_id"] == "authorityState":
+                node["authority_state"] = "IMPLEMENTATION_WITHIN_EXACT_SCOPE"
+                node["source_answers"]["AUT-001"]["value"] = "IMPLEMENTATION_WITHIN_EXACT_SCOPE"
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("AUTHORITY_ELEVATION", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_evidence_answer_state_elevation(self):
+        result = projection.build_readiness_projection(self.session)
+        for node in result.mapping["nodes"]:
+            if node["archify_id"] == "evidenceState":
+                node["answer_state"] = "VERIFIED"
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("EVIDENCE_ELEVATION", {issue["code"] for issue in checked["issues"]})

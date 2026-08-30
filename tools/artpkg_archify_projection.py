@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ DETERMINISTIC_EDGE_RULES = {
     "evidenceBlocksGates": "EDGE_RULE_EVIDENCE_STATE_CONSTRAINS_GATE_READINESS",
     "gatesConstrainAction": "EDGE_RULE_VALIDATE_ANSWERS_NEXT_ACTION_CONSTRAINS_ACTION_NODE",
 }
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass
@@ -62,6 +64,7 @@ def build_readiness_projection(session: dict[str, Any], output_dir: str | Path |
     gate_summary = ", ".join(f"{key}:{gate.get('result', 'UNKNOWN')}" for key, gate in validation.get("gates", {}).items()) or "not evaluated"
     authority = _answer(document, "AUT-001").get("value", "UNKNOWN")
     next_action = _answer(document, "HND-007").get("value", "HUMAN_REVIEW_ONLY")
+    projection_expectations = _projection_expectations(session, validation)
 
     ir = {
         "schema_version": 1,
@@ -70,6 +73,7 @@ def build_readiness_projection(session: dict[str, Any], output_dir: str | Path |
             "title": "ArtPkg Intake Readiness",
             "quality_profile": "showcase",
             "visual_preset": "blueprint",
+            "projection_expectations": projection_expectations,
             "views": [
                 {"id": "reviewQueuesView", "label": "Review queues", "focus": ["preArtifacts", "seededDraft", "reviewQueues"], "note": "See what the upload seeded and what still needs human review."},
                 {"id": "whyBlockedView", "label": "Why blocked", "focus": ["reviewQueues", "acceptanceCriteria", "authorityState", "gateReadiness"], "note": "Missing answers, acceptance criteria, evidence, or authority keep gates from advancing."},
@@ -127,32 +131,8 @@ def _mapping_for(session: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
         "evidenceState": ["VAL-001", "VAL-002", "VAL-003", "VAL-004"],
         "nextPermittedAction": ["HND-007"],
     }
-    aggregations = {
-        "reviewQueues": {
-            "record_set": "INTAKE-REVIEW-QUEUES",
-            "sections": list(session.get("review_queues", {}).keys()),
-            "member_ids": sorted(item.get("id", "UNKNOWN") for queue in session.get("review_queues", {}).values() for item in queue),
-            "rule": "AGGREGATE_REVIEW_QUEUE_MEMBERS_BY_ARTPKG_INTAKE_CLASSIFICATION",
-        },
-        "acceptanceCriteria": {
-            "record_set": "AC-SET",
-            "sections": ["acceptance_criteria"],
-            "member_ids": [record["id"] for record in document.get("records", {}).get("acceptance_criteria", [])],
-            "rule": "AGGREGATE_SECTION_RECORDS_FROM_ARTPKG_AC_SET",
-        },
-        "evidenceState": {
-            "record_set": "EVD-SET",
-            "sections": ["evidence"],
-            "member_ids": [record["id"] for record in document.get("records", {}).get("evidence", [])],
-            "rule": "AGGREGATE_SECTION_RECORDS_FROM_ARTPKG_EVD_SET",
-        },
-        "gateReadiness": {
-            "record_set": "ARTPKG_VALIDATION_GATES",
-            "sections": ["validation.gates"],
-            "member_ids": [f"Gate {key}" for key in sorted(validation.get("gates", {}))],
-            "rule": "AGGREGATE_VALIDATE_ANSWERS_GATE_RESULTS_A_THROUGH_D",
-        },
-    }
+    expectations = ir.get("meta", {}).get("projection_expectations", {})
+    aggregations = expectations.get("aggregations", _aggregation_expectations(session, validation))
     source_catalog = _source_catalog(document, aggregations)
     authority_value = _answer(document, "AUT-001", "NOT_EVALUATED").get("value", "UNKNOWN")
     nodes = []
@@ -236,29 +216,99 @@ def _source_catalog(document: dict[str, Any], aggregations: dict[str, dict[str, 
     }
 
 
+def _projection_expectations(session: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
+    document = session["document"]
+    source = session.get("source", {})
+    return {
+        "source_artifact_sha256": source.get("sha256"),
+        "known_artpkg_ids": _known_artpkg_ids(document),
+        "authority": _source_answer(document, "AUT-001"),
+        "aggregations": _aggregation_expectations(session, validation),
+        "deterministic_edge_rules": copy.deepcopy(DETERMINISTIC_EDGE_RULES),
+        "evidence_verified_supported": _source_evidence_supports_verified(document),
+    }
+
+
+def _aggregation_expectations(session: dict[str, Any], validation: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    document = session["document"]
+    return {
+        "reviewQueues": {
+            "record_set": "INTAKE-REVIEW-QUEUES",
+            "sections": list(session.get("review_queues", {}).keys()),
+            "member_ids": sorted(item.get("id", "UNKNOWN") for queue in session.get("review_queues", {}).values() for item in queue),
+            "rule": "AGGREGATE_REVIEW_QUEUE_MEMBERS_BY_ARTPKG_INTAKE_CLASSIFICATION",
+        },
+        "acceptanceCriteria": {
+            "record_set": "AC-SET",
+            "sections": ["acceptance_criteria"],
+            "member_ids": [record["id"] for record in document.get("records", {}).get("acceptance_criteria", [])],
+            "rule": "AGGREGATE_SECTION_RECORDS_FROM_ARTPKG_AC_SET",
+        },
+        "evidenceState": {
+            "record_set": "EVD-SET",
+            "sections": ["evidence"],
+            "member_ids": [record["id"] for record in document.get("records", {}).get("evidence", [])],
+            "rule": "AGGREGATE_SECTION_RECORDS_FROM_ARTPKG_EVD_SET",
+        },
+        "gateReadiness": {
+            "record_set": "ARTPKG_VALIDATION_GATES",
+            "sections": ["validation.gates"],
+            "member_ids": [f"Gate {key}" for key in sorted(validation.get("gates", {}))],
+            "rule": "AGGREGATE_VALIDATE_ANSWERS_GATE_RESULTS_A_THROUGH_D",
+        },
+    }
+
+
+def _known_artpkg_ids(document: dict[str, Any]) -> list[str]:
+    answer_ids = set(questionnaire.QUESTION_CATALOG) | set(document.get("answers", {}))
+    record_ids = {record["id"] for records in document.get("records", {}).values() for record in records}
+    return sorted(answer_ids | record_ids)
+
+
+def _source_evidence_supports_verified(document: dict[str, Any]) -> bool:
+    for record in document.get("records", {}).get("evidence", []):
+        fields = record.get("fields", {})
+        if str(fields.get("result", "")).upper() == "PASS":
+            return True
+        if str(fields.get("status", "")).upper() in {"VERIFIED", "PASSED", "ACCEPTED"}:
+            return True
+    return False
+
+
 def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
+    expectations = ir.get("meta", {}).get("projection_expectations", {})
     component_ids = {component["id"] for component in ir.get("components", [])}
     components_by_id = {component["id"]: component for component in ir.get("components", [])}
     mapped_node_ids = {node.get("archify_id") for node in mapping.get("nodes", [])}
     edge_ids = {edge["id"] for edge in ir.get("connections", []) if "id" in edge}
     mapped_edge_ids = {edge.get("archify_id") for edge in mapping.get("edges", [])}
-    source_catalog = mapping.get("source_catalog", {})
-    known_records = set(source_catalog.get("answer_ids", [])) | set(source_catalog.get("record_ids", []))
-    aggregation_sets = source_catalog.get("aggregation_sets", {})
+    known_records = set(expectations.get("known_artpkg_ids", []))
+    expected_aggregations = expectations.get("aggregations", {})
+    expected_source_digest = expectations.get("source_artifact_sha256")
     source_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "SOURCE_ARTIFACT"]
     input_digests = {item.get("sha256") for item in source_inputs}
 
+    if not expectations:
+        issues.append({"code": "PROJECTION_EXPECTATIONS_MISSING", "subject": "ir.meta"})
     for missing in sorted(component_ids - mapped_node_ids):
         issues.append({"code": "UNMAPPED_NODE", "subject": missing})
     for missing in sorted(edge_ids - mapped_edge_ids):
         issues.append({"code": "UNMAPPED_EDGE", "subject": missing})
     if len(source_inputs) != 1 or len(input_digests) != 1 or not next(iter(input_digests), None):
         issues.append({"code": "SOURCE_DIGEST_MISSING", "subject": "inputs"})
+    for digest in input_digests | {expected_source_digest}:
+        if not _is_sha256_digest(digest):
+            issues.append({"code": "SOURCE_DIGEST_MALFORMED", "subject": "inputs"})
+    if _is_sha256_digest(expected_source_digest) and input_digests != {expected_source_digest}:
+        issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "inputs"})
     for node in mapping.get("nodes", []):
         archify_id = node.get("archify_id", "UNKNOWN")
-        if node.get("source_artifact_sha256") not in input_digests:
+        node_digest = node.get("source_artifact_sha256")
+        if node_digest not in input_digests or node_digest != expected_source_digest:
             issues.append({"code": "SOURCE_DIGEST_MISSING", "subject": archify_id})
+        if not _is_sha256_digest(node_digest):
+            issues.append({"code": "SOURCE_DIGEST_MALFORMED", "subject": archify_id})
         records = node.get("artpkg_records", [])
         aggregation = node.get("aggregation")
         if records == [] and not aggregation:
@@ -267,16 +317,24 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
             if record_id not in known_records:
                 issues.append({"code": "UNKNOWN_RECORD_MAPPING", "subject": record_id})
         if node.get("mapping_type") == "aggregation":
-            if not _valid_aggregation(aggregation, aggregation_sets):
+            if not _valid_aggregation(archify_id, aggregation, expected_aggregations):
                 issues.append({"code": "AGGREGATION_METADATA_MISSING", "subject": archify_id})
         elif aggregation:
             issues.append({"code": "AGGREGATION_METADATA_MISSING", "subject": archify_id})
 
         if archify_id == "authorityState":
-            source_authority = _source_authority_state(node)
-            if source_authority is None or node.get("authority_state") != source_authority:
+            expected_authority = expectations.get("authority", {})
+            if (
+                not expected_authority
+                or node.get("authority_state") != expected_authority.get("value")
+                or node.get("source_answers", {}).get("AUT-001") != expected_authority
+            ):
                 issues.append({"code": "AUTHORITY_ELEVATION", "subject": "authorityState"})
-        if archify_id == "evidenceState" and _claims_verified_evidence(node, components_by_id.get("evidenceState", {})):
+        if archify_id == "evidenceState" and _claims_verified_evidence(
+            node,
+            components_by_id.get("evidenceState", {}),
+            bool(expectations.get("evidence_verified_supported")),
+        ):
             issues.append({"code": "EVIDENCE_ELEVATION", "subject": "evidenceState"})
     for edge in mapping.get("edges", []):
         if edge.get("archify_id") not in edge_ids:
@@ -292,7 +350,11 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
     }
 
 
-def _valid_aggregation(aggregation: Any, aggregation_sets: dict[str, Any]) -> bool:
+def _is_sha256_digest(value: Any) -> bool:
+    return isinstance(value, str) and SHA256_RE.fullmatch(value) is not None
+
+
+def _valid_aggregation(archify_id: str, aggregation: Any, expected_aggregations: dict[str, Any]) -> bool:
     if not isinstance(aggregation, dict):
         return False
     record_set = aggregation.get("record_set")
@@ -301,25 +363,20 @@ def _valid_aggregation(aggregation: Any, aggregation_sets: dict[str, Any]) -> bo
     member_ids = aggregation.get("member_ids")
     if not record_set or not rule or not isinstance(sections, list) or not isinstance(member_ids, list):
         return False
-    return aggregation_sets.get(record_set) == aggregation
+    return expected_aggregations.get(archify_id) == aggregation
 
 
-def _source_authority_state(node: dict[str, Any]) -> Any:
-    source_authority = node.get("source_answers", {}).get("AUT-001")
-    if not source_authority:
-        return None
-    return source_authority.get("value", "UNKNOWN")
-
-
-def _claims_verified_evidence(node: dict[str, Any], component: dict[str, Any]) -> bool:
-    elevated = {"VERIFIED", "PASS", "PASSED", "RUNTIME_VERIFIED", "PROOF_EXISTS"}
+def _claims_verified_evidence(node: dict[str, Any], component: dict[str, Any], source_supports_verified: bool) -> bool:
+    elevated = {"VERIFIED", "PASS", "PASSED", "ACCEPTED", "RUNTIME_VERIFIED", "PROOF_EXISTS"}
+    if str(node.get("answer_state", "")).upper() in elevated and not source_supports_verified:
+        return True
     for item in node.get("source_answers", {}).values():
-        if str(item.get("state", "")).upper() in elevated or str(item.get("value", "")).upper() in elevated:
+        if not source_supports_verified and (str(item.get("state", "")).upper() in elevated or str(item.get("value", "")).upper() in elevated):
             return True
     for field in ("label", "sublabel", "tag"):
         text = str(component.get(field, "")).upper()
-        if any(token in text for token in elevated):
+        if not source_supports_verified and any(token in text for token in elevated):
             return True
-        if "PROOF EXISTS" in text or "RUNTIME PROOF" in text:
+        if not source_supports_verified and ("PROOF EXISTS" in text or "RUNTIME PROOF" in text):
             return True
     return False
