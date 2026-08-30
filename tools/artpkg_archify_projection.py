@@ -23,6 +23,8 @@ DETERMINISTIC_EDGE_RULES = {
     "gatesConstrainAction": "EDGE_RULE_VALIDATE_ANSWERS_NEXT_ACTION_CONSTRAINS_ACTION_NODE",
 }
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+CANONICAL_SOURCE_NAME = "source_pre_artifacts.md"
+CANONICAL_ANSWERS_NAME = "answers.json"
 
 
 @dataclass
@@ -161,6 +163,7 @@ def _mapping_for(session: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
         "schema_version": 1,
         "artifact_type": "ARTPKG_ARCHIFY_MAPPING_SIDECAR",
         "status": "DRAFT_REVIEW_ARTIFACT",
+        "session_dir": expectations.get("session_dir"),
         "inputs": [
             {"path": source.get("path"), "stored_path": source.get("stored_path"), "sha256": source.get("sha256"), "role": "SOURCE_ARTIFACT"},
             {"path": session.get("answers_path"), "role": "ARTPKG_ANSWERS"},
@@ -224,6 +227,7 @@ def _projection_expectations(session: dict[str, Any], validation: dict[str, Any]
     document = session["document"]
     source = session.get("source", {})
     return {
+        "session_dir": str(Path(session["session_dir"]).expanduser().resolve()),
         "source_artifact_sha256": source.get("sha256"),
         "known_artpkg_ids": _known_artpkg_ids(document),
         "authority": _source_answer(document, "AUT-001"),
@@ -290,7 +294,7 @@ def _sha256_file(path: Path) -> str:
 def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     expectations = ir.get("meta", {}).get("projection_expectations", {})
-    source_context = _read_projection_sources(mapping)
+    source_context = _read_projection_sources(expectations, mapping)
     issues.extend(source_context["issues"])
     component_ids = {component["id"] for component in ir.get("components", [])}
     components_by_id = {component["id"]: component for component in ir.get("components", [])}
@@ -377,30 +381,55 @@ def _is_sha256_digest(value: Any) -> bool:
     return isinstance(value, str) and SHA256_RE.fullmatch(value) is not None
 
 
-def _read_projection_sources(mapping: dict[str, Any]) -> dict[str, Any]:
+def _read_projection_sources(expectations: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     source_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "SOURCE_ARTIFACT"]
     answers_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "ARTPKG_ANSWERS"]
     context: dict[str, Any] = {"issues": issues}
+    session_dir = _absolute_resolved_path(expectations.get("session_dir"))
+    mapping_session_dir = _absolute_resolved_path(mapping.get("session_dir"))
+
+    if session_dir is None:
+        issues.append({"code": "SESSION_DIR_MISSING", "subject": "ir.meta.projection_expectations"})
+        return context
+    if mapping_session_dir != session_dir:
+        issues.append({"code": "SESSION_DIR_MISMATCH", "subject": "mapping.session_dir"})
+
+    canonical_source_path = (session_dir / CANONICAL_SOURCE_NAME).resolve()
+    canonical_answers_path = (session_dir / CANONICAL_ANSWERS_NAME).resolve()
 
     if len(source_inputs) != 1:
         issues.append({"code": "SOURCE_FILE_UNREADABLE", "subject": "SOURCE_ARTIFACT"})
     else:
-        source_path = source_inputs[0].get("stored_path")
-        try:
-            context["source_digest"] = _sha256_file(Path(source_path).expanduser().resolve())
-        except (OSError, TypeError, ValueError):
-            issues.append({"code": "SOURCE_FILE_UNREADABLE", "subject": str(source_path)})
+        if _absolute_resolved_path(source_inputs[0].get("stored_path")) != canonical_source_path:
+            issues.append({"code": "SOURCE_PATH_MISMATCH", "subject": str(source_inputs[0].get("stored_path"))})
+    try:
+        context["source_digest"] = _sha256_file(canonical_source_path)
+    except (OSError, TypeError, ValueError):
+        issues.append({"code": "SOURCE_FILE_UNREADABLE", "subject": str(canonical_source_path)})
 
     if len(answers_inputs) != 1:
         issues.append({"code": "ANSWERS_FILE_UNREADABLE", "subject": "ARTPKG_ANSWERS"})
     else:
-        answers_path = answers_inputs[0].get("path")
-        try:
-            context["document"] = questionnaire.load_answers(str(Path(answers_path).expanduser().resolve()))
-        except (OSError, TypeError, ValueError):
-            issues.append({"code": "ANSWERS_FILE_UNREADABLE", "subject": str(answers_path)})
+        if _absolute_resolved_path(answers_inputs[0].get("path")) != canonical_answers_path:
+            issues.append({"code": "ANSWERS_PATH_MISMATCH", "subject": str(answers_inputs[0].get("path"))})
+    try:
+        context["document"] = questionnaire.load_answers(str(canonical_answers_path))
+    except (OSError, TypeError, ValueError):
+        issues.append({"code": "ANSWERS_FILE_UNREADABLE", "subject": str(canonical_answers_path)})
     return context
+
+
+def _absolute_resolved_path(value: Any) -> Path | None:
+    if not isinstance(value, str):
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        return None
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
 
 
 def _valid_aggregation(archify_id: str, aggregation: Any, expected_aggregations: dict[str, Any]) -> bool:

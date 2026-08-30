@@ -42,6 +42,9 @@ class ArchifyProjectionTests(unittest.TestCase):
         self.assertTrue(Path(result.validation_path).exists())
         self.assertEqual("architecture", result.ir["diagram_type"])
         self.assertEqual("ARTPKG_ARCHIFY_MAPPING_SIDECAR", result.mapping["artifact_type"])
+        expected_session_dir = str(Path(self.session["session_dir"]).resolve())
+        self.assertEqual(expected_session_dir, result.ir["meta"]["projection_expectations"]["session_dir"])
+        self.assertEqual(expected_session_dir, result.mapping["session_dir"])
 
         component_ids = {component["id"] for component in result.ir["components"]}
         mapped_node_ids = {node["archify_id"] for node in result.mapping["nodes"]}
@@ -241,3 +244,49 @@ class ArchifyProjectionTests(unittest.TestCase):
         checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
         self.assertEqual("BLOCKED", checked["status"])
         self.assertIn("ANSWERS_FILE_UNREADABLE", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_substituted_session_source_paths(self):
+        result = projection.build_readiness_projection(self.session)
+        substituted_pre = self.root / "substituted-pre.md"
+        substituted_pre.write_text(self.pre.read_text(encoding="utf-8") + "\nSubstituted source.\n", encoding="utf-8")
+        substituted_session = intake.create_intake_session(
+            substituted_pre,
+            self.root / "substituted-workspace",
+            template_path=self.template,
+            respondent="Substitute",
+        )
+        substituted_authority = {
+            key: substituted_session["document"]["answers"]["AUT-001"].get(key)
+            for key in ("value", "state", "source_type", "source_reference")
+        }
+
+        expectations = result.ir["meta"]["projection_expectations"]
+        expectations["source_artifact_sha256"] = substituted_session["source"]["sha256"]
+        expectations["authority"] = substituted_authority
+        expectations["evidence_verified_supported"] = False
+        for item in result.mapping["inputs"]:
+            if item["role"] == "SOURCE_ARTIFACT":
+                item["path"] = substituted_session["source"]["path"]
+                item["stored_path"] = substituted_session["source"]["stored_path"]
+                item["sha256"] = substituted_session["source"]["sha256"]
+            if item["role"] == "ARTPKG_ANSWERS":
+                item["path"] = substituted_session["answers_path"]
+        for node in result.mapping["nodes"]:
+            node["source_artifact_sha256"] = substituted_session["source"]["sha256"]
+            if node["archify_id"] == "authorityState":
+                node["authority_state"] = substituted_authority["value"]
+                node["source_answers"]["AUT-001"] = substituted_authority
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        issue_codes = {issue["code"] for issue in checked["issues"]}
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("SOURCE_PATH_MISMATCH", issue_codes)
+        self.assertIn("ANSWERS_PATH_MISMATCH", issue_codes)
+
+    def test_projection_rejects_mismatched_session_anchor(self):
+        result = projection.build_readiness_projection(self.session)
+        result.mapping["session_dir"] = str((self.root / "substituted-session").resolve())
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("SESSION_DIR_MISMATCH", {issue["code"] for issue in checked["issues"]})
