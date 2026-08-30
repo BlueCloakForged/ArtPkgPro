@@ -81,11 +81,12 @@ def build_projection_summary(session: dict[str, Any]) -> dict[str, Any]:
     config = archify_config_for_session(session)
     html_path = str(Path(result.ir_path).with_suffix(".html"))
     validate = artpkg_archify_runner.run_archify_validate(config, "architecture", result.ir_path)
+    Path(html_path).unlink(missing_ok=True)
     deliver = artpkg_archify_runner.run_archify_deliver(config, "architecture", result.ir_path, html_path)
-    visual = artpkg_archify_runner.run_archify_visual_check(config, html_path) if Path(html_path).exists() else {
+    visual = artpkg_archify_runner.run_archify_visual_check(config, html_path) if deliver.get("ok") is True and Path(html_path).exists() else {
         "ok": False,
         "operation": "visual-check",
-        "receipt": {"ok": False, "error": "Archify deliver did not create HTML"},
+        "receipt": {"ok": False, "error": "Archify deliver did not create fresh HTML"},
     }
     return {
         "ir_path": result.ir_path,

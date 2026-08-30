@@ -39,6 +39,12 @@ def _artifact_path(operation: str, args: list[str]) -> str | None:
     return None
 
 
+def _output_path(operation: str, args: list[str]) -> str | None:
+    if operation == "deliver" and len(args) >= 4:
+        return args[3]
+    return None
+
+
 def _write_receipt(config: ArchifyConfig, operation: str, result: dict[str, Any]) -> None:
     if not config.receipt_dir:
         return
@@ -54,6 +60,7 @@ def _run(config: ArchifyConfig, args: list[str]) -> dict[str, Any]:
     operation = args[0] if args else "unknown"
     diagram_type = args[1] if operation in {"validate", "deliver"} and len(args) > 1 else None
     artifact_path = _artifact_path(operation, args)
+    output_path = _output_path(operation, args)
     artifact_sha256 = sha256_file(artifact_path) if artifact_path and Path(artifact_path).exists() else None
     try:
         completed = subprocess.run(command, cwd=config.archify_root, text=True, capture_output=True, timeout=config.timeout_seconds)
@@ -83,6 +90,8 @@ def _run(config: ArchifyConfig, args: list[str]) -> dict[str, Any]:
         "cwd": config.archify_root,
         "artifact_path": artifact_path,
         "artifact_sha256": artifact_sha256,
+        "output_path": output_path,
+        "output_sha256": sha256_file(output_path) if output_path and Path(output_path).exists() else None,
         "timeout_seconds": config.timeout_seconds,
         "created": _now(),
         "receipt": receipt,

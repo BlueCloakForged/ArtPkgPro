@@ -57,6 +57,29 @@ class ArchifyRunnerTests(unittest.TestCase):
         self.assertEqual(3, persisted["timeout_seconds"])
         self.assertEqual("TIMEOUT", persisted["exit_code"])
 
+    def test_deliver_receipt_records_output_html_digest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact = Path(temp_dir) / "input.json"
+            html = Path(temp_dir) / "output.html"
+            artifact.write_text("{}", encoding="utf-8")
+            html.write_text("<html>current</html>", encoding="utf-8")
+            config = runner.ArchifyConfig(receipt_dir=temp_dir)
+            completed = runner.subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps({"ok": True}),
+                stderr="",
+            )
+            with patch("artpkg_archify_runner.subprocess.run", return_value=completed):
+                result = runner.run_archify_deliver(config, "architecture", artifact, html)
+
+            html_digest = runner.sha256_file(html)
+            persisted = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(html_digest, result["output_sha256"])
+        self.assertEqual(result["output_sha256"], persisted["output_sha256"])
+
     def test_validate_uses_explicit_node_and_archify_root_without_receipt_dir(self):
         config = runner.ArchifyConfig(node_executable="C:/node/node.exe", archify_root="D:/archify/archify")
         completed = runner.subprocess.CompletedProcess(

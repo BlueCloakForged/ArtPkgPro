@@ -110,6 +110,28 @@ class IntakeServerTests(unittest.TestCase):
         deliver.assert_called_once()
         visual.assert_called_once()
 
+    def test_build_projection_summary_does_not_visual_check_stale_html_after_failed_deliver(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ir_path = Path(temp_dir) / "artpkg-readiness.architecture.json"
+            ir_path.write_text("{}", encoding="utf-8")
+            stale_html = ir_path.with_suffix(".html")
+            stale_html.write_text("<html>stale</html>", encoding="utf-8")
+            projection = SimpleNamespace(
+                ir_path=str(ir_path),
+                mapping_path=str(Path(temp_dir) / "artpkg-readiness.mapping.json"),
+                validation_path=str(Path(temp_dir) / "artpkg-readiness.projection-validation.json"),
+            )
+            with patch("artpkg_intake_server.artpkg_archify_projection.build_readiness_projection", return_value=projection), \
+                    patch("artpkg_intake_server.artpkg_archify_runner.run_archify_validate", return_value={"ok": True}), \
+                    patch("artpkg_intake_server.artpkg_archify_runner.run_archify_deliver", return_value={"ok": False, "receipt": {"error": "failed"}}), \
+                    patch("artpkg_intake_server.artpkg_archify_runner.run_archify_visual_check") as visual:
+                summary = server.build_projection_summary({"session_dir": temp_dir})
+
+        self.assertFalse(Path(summary["html_path"]).exists())
+        self.assertFalse(summary["archify"]["visual_check"]["ok"])
+        self.assertEqual("Archify deliver did not create fresh HTML", summary["archify"]["visual_check"]["receipt"]["error"])
+        visual.assert_not_called()
+
     def test_ui_contains_upload_review_and_projection_controls(self):
         html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
         html = html_path.read_text(encoding="utf-8")
