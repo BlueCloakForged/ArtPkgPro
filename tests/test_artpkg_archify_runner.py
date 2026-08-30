@@ -42,3 +42,33 @@ class ArchifyRunnerTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(1, result["exit_code"])
         self.assertEqual("bad diagram", result["receipt"]["error"])
+
+    def test_invalid_json_result_is_not_success(self):
+        config = runner.ArchifyConfig()
+        completed = runner.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="not json",
+            stderr="",
+        )
+        with patch("artpkg_archify_runner.subprocess.run", return_value=completed):
+            result = runner.run_archify_validate(config, "architecture", "input.json")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("Archify did not return JSON", result["receipt"]["error"])
+        self.assertEqual("not json", result["receipt"]["stdout"])
+
+    def test_non_object_json_result_is_not_success(self):
+        config = runner.ArchifyConfig()
+        completed = runner.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(["unexpected", "receipt"]),
+            stderr="",
+        )
+        with patch("artpkg_archify_runner.subprocess.run", return_value=completed):
+            result = runner.run_archify_validate(config, "architecture", "input.json")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("Archify did not return a JSON object", result["receipt"]["error"])
+        self.assertEqual(["unexpected", "receipt"], result["receipt"]["value"])

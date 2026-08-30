@@ -22,6 +22,8 @@ def _run(config: ArchifyConfig, args: list[str]) -> dict[str, Any]:
         receipt = json.loads(completed.stdout or "{}")
     except json.JSONDecodeError:
         receipt = {"ok": False, "error": "Archify did not return JSON", "stdout": completed.stdout}
+    if not isinstance(receipt, dict):
+        receipt = {"ok": False, "error": "Archify did not return a JSON object", "value": receipt}
     return {
         "ok": completed.returncode == 0 and receipt.get("ok") is True,
         "exit_code": completed.returncode,
