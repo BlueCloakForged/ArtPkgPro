@@ -48,3 +48,20 @@ class IntakeSessionTests(unittest.TestCase):
     def test_gitignore_excludes_local_artpkg_sessions(self):
         gitignore = (Path(__file__).parents[1] / ".gitignore").read_text(encoding="utf-8")
         self.assertIn(".artpkg/", gitignore)
+
+    def test_rejected_seeded_answer_persists_and_needs_replacement(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+
+        rejected = intake.reject_seeded_answer(session, "PKG-001", "Project name needs correction", "Reviewer")
+        reloaded = intake.load_intake_session(session["session_dir"])
+        queued_ids = {item["id"] for item in reloaded["review_queues"]["needs_answer"]}
+
+        self.assertEqual("Example Intake", rejected["value"])
+        self.assertEqual("HUMAN_REJECTED", reloaded["document"]["answers"]["PKG-001"]["review_disposition"])
+        self.assertEqual("Example Intake", reloaded["document"]["answers"]["PKG-001"]["value"])
+        self.assertIn("PKG-001", queued_ids)

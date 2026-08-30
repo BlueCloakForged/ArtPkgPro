@@ -133,7 +133,9 @@ def build_review_queues(document: dict[str, Any], seed: dict[str, Any], validati
         score = item.get("confidence_score")
         disposition = item.get("review_disposition")
 
-        if state in {"UNKNOWN", "DEFERRED", "TO_BE_INSPECTED"} or qid in blocking_ids:
+        if disposition == "HUMAN_REJECTED":
+            queues["needs_answer"].append(_queue_item(qid, item, "seeded answer rejected; replacement required"))
+        elif state in {"UNKNOWN", "DEFERRED", "TO_BE_INSPECTED"} or qid in blocking_ids:
             queues["needs_answer"].append(_queue_item(qid, item, "unresolved or blocking answer"))
         elif disposition == "SEEDED_PENDING_REVIEW" and (score is None or score < 90):
             queues["needs_confirmation"].append(_queue_item(qid, item, "seeded answer needs human confirmation"))
