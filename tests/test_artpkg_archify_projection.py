@@ -67,3 +67,86 @@ class ArchifyProjectionTests(unittest.TestCase):
         checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
         self.assertEqual("BLOCKED", checked["status"])
         self.assertIn("AUTHORITY_ELEVATION", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_missing_digest(self):
+        result = projection.build_readiness_projection(self.session)
+        result.mapping["inputs"][0]["sha256"] = None
+        for node in result.mapping["nodes"]:
+            node["source_artifact_sha256"] = None
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("SOURCE_DIGEST_MISSING", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_empty_and_unknown_record_mapping(self):
+        result = projection.build_readiness_projection(self.session)
+        for node in result.mapping["nodes"]:
+            if node["archify_id"] == "authorityState":
+                node["artpkg_records"] = []
+            if node["archify_id"] == "preArtifacts":
+                node["artpkg_records"] = ["PKG-999"]
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("EMPTY_RECORD_MAPPING", {issue["code"] for issue in checked["issues"]})
+        self.assertIn("UNKNOWN_RECORD_MAPPING", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_requires_explicit_aggregation_metadata(self):
+        result = projection.build_readiness_projection(self.session)
+        for node in result.mapping["nodes"]:
+            if node["archify_id"] == "acceptanceCriteria":
+                self.assertEqual("aggregation", node["mapping_type"])
+                self.assertEqual("AC-SET", node["aggregation"]["record_set"])
+                self.assertIn("acceptance_criteria", node["aggregation"]["sections"])
+                del node["aggregation"]
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("AGGREGATION_METADATA_MISSING", {issue["code"] for issue in checked["issues"]})
+
+    def test_projection_rejects_invalid_edge_rule(self):
+        result = projection.build_readiness_projection(self.session)
+        result.mapping["edges"][0]["rule"] = "LLM-INFERRED-LINK"
+        result.mapping["edges"][0]["relation_type"] = "arbitrary"
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("INVALID_EDGE_RULE", {issue["code"] for issue in checked["issues"]})
+
+    def test_build_recomputes_stale_validation(self):
+        self.session["validation"] = {"status": "PASS", "gates": {"X": {"result": "PASS"}}, "next_permitted_action": "IMPLEMENT"}
+
+        result = projection.build_readiness_projection(self.session)
+
+        self.assertEqual("BLOCKED", result.projection_validation["artpkg_validation_status"])
+        self.assertEqual("BLOCKED", self.session["validation"]["status"])
+        self.assertEqual("HUMAN_REVIEW_ONLY", self.session["validation"]["next_permitted_action"])
+        self.assertNotIn("X:PASS", result.ir["components"][6]["sublabel"])
+
+    def test_projection_rejects_evidence_elevation(self):
+        result = projection.build_readiness_projection(self.session)
+        for node in result.mapping["nodes"]:
+            if node["archify_id"] == "evidenceState":
+                node["source_answers"]["VAL-002"]["state"] = "VERIFIED"
+                node["source_answers"]["VAL-002"]["value"] = "Runtime proof exists"
+        for component in result.ir["components"]:
+            if component["id"] == "evidenceState":
+                component["tag"] = "VERIFIED"
+
+        checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
+        self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("EVIDENCE_ELEVATION", {issue["code"] for issue in checked["issues"]})
+
+    def test_mapping_preserves_distinct_source_sentinel_states(self):
+        intake.questionnaire.set_answer(self.session["document"], "AUT-001", "NONE", state="PROVIDED", source_type="SOURCE_ARTIFACT")
+        intake.questionnaire.set_answer(self.session["document"], "AUT-008", "NOT_APPLICABLE", state="NOT_APPLICABLE", source_type="DERIVED_BY_SCRIPT")
+        intake.questionnaire.set_answer(self.session["document"], "VAL-001", "TO_BE_INSPECTED", state="TO_BE_INSPECTED", source_type="SOURCE_ARTIFACT")
+        intake.questionnaire.set_answer(self.session["document"], "VAL-002", "DEFERRED", state="DEFERRED", source_type="SOURCE_ARTIFACT")
+
+        result = projection.build_readiness_projection(self.session)
+        source_answers = {node["archify_id"]: node["source_answers"] for node in result.mapping["nodes"]}
+
+        self.assertEqual({"value": "NONE", "state": "PROVIDED"}, {key: source_answers["authorityState"]["AUT-001"][key] for key in ("value", "state")})
+        self.assertEqual({"value": "NOT_APPLICABLE", "state": "NOT_APPLICABLE"}, {key: source_answers["authorityState"]["AUT-008"][key] for key in ("value", "state")})
+        self.assertEqual({"value": "TO_BE_INSPECTED", "state": "TO_BE_INSPECTED"}, {key: source_answers["evidenceState"]["VAL-001"][key] for key in ("value", "state")})
+        self.assertEqual({"value": "DEFERRED", "state": "DEFERRED"}, {key: source_answers["evidenceState"]["VAL-002"][key] for key in ("value", "state")})
