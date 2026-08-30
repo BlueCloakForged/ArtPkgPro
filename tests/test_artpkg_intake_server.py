@@ -182,6 +182,16 @@ class IntakeServerTests(unittest.TestCase):
         self.assertLess(html.index('id="visualizeGaps"'), html.index('id="queueTabs"'))
         self.assertNotIn("Build readiness projection", html)
 
+    def test_ui_projection_result_links_to_html_without_dumping_receipt_json(self):
+        html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
+        html = html_path.read_text(encoding="utf-8")
+
+        self.assertIn("Open visualization", html)
+        self.assertIn('target = "_blank"', html)
+        self.assertIn("session.projection.html_path", html)
+        self.assertNotIn("JSON.stringify(session.projection", html)
+        self.assertNotIn("Projection built", html)
+
     def test_ui_supports_answer_and_record_actions(self):
         html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
         html = html_path.read_text(encoding="utf-8")

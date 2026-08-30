@@ -38,7 +38,7 @@
     .answer-controls { display:grid; grid-template-columns:minmax(220px, 1fr) 190px auto; gap:8px; align-items:end; }
     .answer-controls label { margin:0; font-size:12px; color:#52606d; }
     .value { white-space:pre-wrap; background:#f6f7f9; border-radius:6px; padding:10px; font-family:Consolas, monospace; font-size:12px; }
-    .projection-link { display:inline-flex; align-items:center; width:max-content; color:#174ea6; font-weight:700; text-decoration:none; }
+    .projection-link { display:inline-flex; align-items:center; width:max-content; border:1px solid #174ea6; border-radius:6px; background:#174ea6; color:#fff; font-weight:700; text-decoration:none; padding:8px 11px; }
     .actions { display:flex; gap:8px; flex-wrap:wrap; }
     .status { font-size:13px; color:#52606d; }
     iframe { width:100%; min-height:560px; border:1px solid #d8dee6; border-radius:8px; background:#fff; }
@@ -284,7 +284,7 @@
         area.innerHTML = "";
         const card = document.createElement("article");
         card.className = "card";
-        appendText(card, "strong", "", "Projection built");
+        appendText(card, "strong", "", "Visualization ready");
         if (session.projection.html_path) {
           const link = document.createElement("a");
           link.className = "projection-link";
@@ -295,7 +295,6 @@
           card.appendChild(link);
           appendText(card, "div", "meta", `HTML: ${session.projection.html_path}`);
         }
-        appendText(card, "div", "value", JSON.stringify(session.projection, null, 2));
         area.appendChild(card);
         setStatus("Visualization ready");
         render();
