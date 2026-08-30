@@ -79,3 +79,12 @@ class IntakeServerTests(unittest.TestCase):
             session = server.load_workspace_session(str(session_dir), workspace)
 
             self.assertEqual(str(session_dir.resolve()), session["session_dir"])
+
+    def test_ui_contains_upload_review_and_projection_controls(self):
+        html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
+        html = html_path.read_text(encoding="utf-8")
+        self.assertIn('id="preArtifactsFile"', html)
+        self.assertIn('id="reviewQueues"', html)
+        self.assertIn('data-action="confirm"', html)
+        self.assertIn('data-action="reject"', html)
+        self.assertIn('id="buildProjection"', html)

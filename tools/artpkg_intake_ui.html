@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ArtPkg Intake</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, Segoe UI, Arial, sans-serif; background:#f6f7f9; color:#17202a; }
+    body { margin:0; }
+    header { padding:18px 24px; border-bottom:1px solid #d8dee6; background:#fff; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+    h1 { font-size:20px; margin:0; letter-spacing:0; }
+    main { display:grid; grid-template-columns:320px 1fr; min-height:calc(100vh - 65px); }
+    aside { border-right:1px solid #d8dee6; background:#fff; padding:18px; }
+    section { padding:18px 22px; }
+    label { display:block; font-weight:650; margin-bottom:8px; }
+    input[type=file] { width:100%; border:1px solid #b8c2cc; border-radius:6px; padding:10px; background:#fff; }
+    button { border:1px solid #8795a5; background:#fff; border-radius:6px; padding:8px 11px; cursor:pointer; }
+    button.primary { background:#174ea6; border-color:#174ea6; color:#fff; }
+    button.danger { border-color:#b42318; color:#b42318; }
+    .stack { display:grid; gap:12px; }
+    .queue-tabs { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px; }
+    .queue-tabs button[aria-pressed=true] { background:#17202a; color:#fff; }
+    .card { border:1px solid #d8dee6; border-radius:8px; background:#fff; padding:14px; display:grid; gap:8px; }
+    .meta { color:#52606d; font-size:12px; }
+    .value { white-space:pre-wrap; background:#f6f7f9; border-radius:6px; padding:10px; font-family:Consolas, monospace; font-size:12px; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    .status { font-size:13px; color:#52606d; }
+    iframe { width:100%; min-height:560px; border:1px solid #d8dee6; border-radius:8px; background:#fff; }
+    @media (max-width: 860px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid #d8dee6; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ArtPkg Intake</h1>
+    <div class="status" id="status">No session loaded</div>
+  </header>
+  <main>
+    <aside class="stack">
+      <div>
+        <label for="preArtifactsFile">Pre-artifacts file</label>
+        <input id="preArtifactsFile" type="file" accept=".md,.markdown,.txt">
+      </div>
+      <button class="primary" id="upload">Start questionnaire</button>
+      <button id="buildProjection">Build readiness projection</button>
+      <div id="sessionMeta" class="status"></div>
+    </aside>
+    <section>
+      <div class="queue-tabs" id="queueTabs"></div>
+      <div class="stack" id="reviewQueues"></div>
+      <div class="stack" id="projectionArea"></div>
+    </section>
+  </main>
+  <script>
+    let session = null;
+    let activeQueue = "needs_answer";
+    const labels = {
+      needs_answer: "Needs answer",
+      needs_confirmation: "Needs confirmation",
+      authority_sensitive: "Authority-sensitive",
+      evidence_sensitive: "Evidence-sensitive",
+      ready_for_quick_review: "Ready"
+    };
+
+    function setStatus(text) { document.getElementById("status").textContent = text; }
+
+    async function postJson(url, payload) {
+      const response = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Request failed");
+      return data;
+    }
+
+    function render() {
+      if (!session) return;
+      document.getElementById("sessionMeta").textContent = `Session: ${session.session_id}`;
+      const tabs = document.getElementById("queueTabs");
+      tabs.innerHTML = "";
+      Object.keys(labels).forEach((name) => {
+        const button = document.createElement("button");
+        button.textContent = `${labels[name]} (${session.queue_counts[name] || 0})`;
+        button.setAttribute("aria-pressed", String(activeQueue === name));
+        button.onclick = () => { activeQueue = name; render(); };
+        tabs.appendChild(button);
+      });
+
+      const list = document.getElementById("reviewQueues");
+      list.innerHTML = "";
+      (session.review_queues[activeQueue] || []).forEach((item) => {
+        const card = document.createElement("article");
+        card.className = "card";
+        card.innerHTML = `
+          <strong>${item.id} ${item.label || ""}</strong>
+          <div class="meta">${item.reason || ""} | ${item.state || ""} | ${item.source_type || ""} | confidence ${item.confidence_score ?? "n/a"}</div>
+          <div class="value"></div>
+          <div class="actions">
+            <button data-action="confirm">Confirm</button>
+            <button data-action="reject" class="danger">Reject</button>
+          </div>
+        `;
+        card.querySelector(".value").textContent = typeof item.value === "string" ? item.value : JSON.stringify(item.value, null, 2);
+        card.querySelector('[data-action="confirm"]').onclick = async () => {
+          session = await postJson("/api/session/confirm", { session_dir:session.session_dir, question_id:item.id, reviewer:"UI reviewer" });
+          render();
+        };
+        card.querySelector('[data-action="reject"]').onclick = async () => {
+          const reason = prompt("Why is this seeded value rejected?") || "Rejected in UI";
+          session = await postJson("/api/session/reject", { session_dir:session.session_dir, question_id:item.id, reason, reviewer:"UI reviewer" });
+          render();
+        };
+        list.appendChild(card);
+      });
+    }
+
+    document.getElementById("upload").onclick = async () => {
+      const file = document.getElementById("preArtifactsFile").files[0];
+      if (!file) { setStatus("Choose a pre-artifacts file first"); return; }
+      const body = new FormData();
+      body.append("file", file);
+      setStatus("Creating intake session");
+      const response = await fetch("/api/intake", { method:"POST", body });
+      session = await response.json();
+      if (!response.ok) { setStatus(session.error || "Upload failed"); return; }
+      setStatus("Session ready");
+      render();
+    };
+
+    document.getElementById("buildProjection").onclick = async () => {
+      if (!session) { setStatus("Start a session first"); return; }
+      setStatus("Building readiness projection");
+      session = await postJson("/api/session/project", { session_dir:session.session_dir });
+      const area = document.getElementById("projectionArea");
+      area.innerHTML = `<article class="card"><strong>Projection built</strong><div class="value">${JSON.stringify(session.projection, null, 2)}</div></article>`;
+      setStatus("Projection ready");
+      render();
+    };
+  </script>
+</body>
+</html>
