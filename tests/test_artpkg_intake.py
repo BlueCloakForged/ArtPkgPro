@@ -96,6 +96,47 @@ class IntakeSessionTests(unittest.TestCase):
         self.assertIn("SEC-001", authority_ids)
         self.assertIn("OVR-007", evidence_ids)
 
+    def test_answer_queue_items_include_question_context_for_human_review(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+        bnd_item = next(item for item in session["review_queues"]["needs_answer"] if item["id"] == "BND-001")
+
+        self.assertEqual("Scope boundary", bnd_item["question"]["group"])
+        self.assertEqual("Make the included and excluded work explicit before it is handed off.", bnd_item["question"]["group_description"])
+        self.assertEqual("In scope", bnd_item["question"]["prompt"])
+        self.assertEqual("LONG_TEXT", bnd_item["question"]["answer_type"])
+        self.assertEqual(
+            "Name the behavior, components, or decisions this package is allowed to discuss or change.",
+            bnd_item["question"]["meaning"],
+        )
+        self.assertEqual("Order validation and its public API contract.", bnd_item["question"]["example"])
+        self.assertEqual([], bnd_item["question"]["choices"])
+
+    def test_record_queue_items_include_schema_context_for_human_review(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+        record_id = next(iter(session["created_records"].values()))[0]
+        record_item = next(item for item in session["review_queues"]["needs_confirmation"] if item["id"] == record_id)
+
+        self.assertEqual("Functional Requirements", record_item["record_context"]["label"])
+        self.assertEqual("Functional requirements", record_item["record_context"]["group"])
+        self.assertEqual(
+            "Record a human-owned behavior the project must provide.",
+            record_item["record_context"]["group_description"],
+        )
+        fields = {field["name"]: field for field in record_item["record_schema"]}
+        self.assertEqual("Requirement text", fields["requirement"]["label"])
+        self.assertEqual("Provide the requirement text for this functional requirements record.", fields["requirement"]["meaning"])
+        self.assertEqual(["ACCEPTED", "IMPLEMENTED", "PROPOSED", "VERIFIED"], fields["status"]["choices"])
+
     def test_confirm_and_reject_seeded_answers_are_durable(self):
         session = intake.create_intake_session(
             self.pre,

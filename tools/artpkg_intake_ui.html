@@ -26,11 +26,20 @@
     .queue-tabs button[aria-pressed=true] { background:#17202a; color:#fff; }
     .card { border:1px solid #d8dee6; border-radius:8px; background:#fff; padding:14px; display:grid; gap:8px; }
     .meta { color:#52606d; font-size:12px; }
+    .guidance { border-left:3px solid #2f6f5e; background:#eef7f3; padding:10px 12px; display:grid; gap:6px; font-size:13px; line-height:1.4; }
+    .guidance-title { font-weight:700; color:#183d34; }
+    .guidance-row { display:grid; gap:2px; }
+    .field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:8px; }
+    .field-note { border:1px solid #d8dee6; border-radius:6px; padding:8px; background:#fff; display:grid; gap:4px; }
+    .field-note strong { font-size:13px; }
+    .answer-controls { display:grid; grid-template-columns:minmax(220px, 1fr) 190px auto; gap:8px; align-items:end; }
+    .answer-controls label { margin:0; font-size:12px; color:#52606d; }
     .value { white-space:pre-wrap; background:#f6f7f9; border-radius:6px; padding:10px; font-family:Consolas, monospace; font-size:12px; }
+    .projection-link { display:inline-flex; align-items:center; width:max-content; color:#174ea6; font-weight:700; text-decoration:none; }
     .actions { display:flex; gap:8px; flex-wrap:wrap; }
     .status { font-size:13px; color:#52606d; }
     iframe { width:100%; min-height:560px; border:1px solid #d8dee6; border-radius:8px; background:#fff; }
-    @media (max-width: 860px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid #d8dee6; } }
+    @media (max-width: 860px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid #d8dee6; } .answer-controls { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -86,6 +95,50 @@
       return element;
     }
 
+    function renderQuestionContext(card, item) {
+      const question = item.question || {};
+      const guidance = document.createElement("div");
+      guidance.className = "guidance";
+      appendText(guidance, "div", "guidance-title", `${question.group || "Questionnaire"} · ${question.answer_type || "Answer"}`);
+      appendText(guidance, "div", "", question.group_description || "Provide enough context to make this package reviewable.");
+      const meaning = document.createElement("div");
+      meaning.className = "guidance-row";
+      appendText(meaning, "strong", "", "What this means");
+      appendText(meaning, "span", "", question.meaning || "Answer this explicitly, or mark it unknown/deferred when that is truthful.");
+      guidance.appendChild(meaning);
+      if (question.example) {
+        const example = document.createElement("div");
+        example.className = "guidance-row";
+        appendText(example, "strong", "", "Example");
+        appendText(example, "span", "", question.example);
+        guidance.appendChild(example);
+      }
+      if ((question.choices || []).length) {
+        appendText(guidance, "div", "meta", `Allowed choices: ${question.choices.join(", ")}`);
+      }
+      card.appendChild(guidance);
+    }
+
+    function renderRecordContext(card, item) {
+      const context = item.record_context || {};
+      const guidance = document.createElement("div");
+      guidance.className = "guidance";
+      appendText(guidance, "div", "guidance-title", `${context.label || item.label || "Record"} · ${context.group || "Repeated record"}`);
+      appendText(guidance, "div", "", context.group_description || "Review each seeded field before accepting the record into the package.");
+      const fields = document.createElement("div");
+      fields.className = "field-grid";
+      (item.record_schema || []).forEach((field) => {
+        const note = document.createElement("div");
+        note.className = "field-note";
+        appendText(note, "strong", "", field.label || field.name);
+        appendText(note, "span", "", field.meaning || "Provide a specific, reviewable value.");
+        if ((field.choices || []).length) appendText(note, "span", "meta", `Choices: ${field.choices.join(", ")}`);
+        fields.appendChild(note);
+      });
+      if (fields.childElementCount) guidance.appendChild(fields);
+      card.appendChild(guidance);
+    }
+
     function actionPayload(item) {
       return item.kind === "record"
         ? { session_dir:session.session_dir, record_id:item.id, reviewer:"UI reviewer" }
@@ -117,22 +170,30 @@
         card.className = "card";
         appendText(card, "strong", "", `${item.id} ${item.label || ""}`);
         appendText(card, "div", "meta", `${item.reason || ""} | ${item.state || ""} | ${item.source_type || ""} | confidence ${item.confidence_score ?? "n/a"}`);
+        if (item.kind === "answer") renderQuestionContext(card, item);
+        if (item.kind === "record") renderRecordContext(card, item);
         appendText(card, "div", "value", typeof item.value === "string" ? item.value : JSON.stringify(item.value, null, 2));
 
         if (item.kind === "answer") {
+          const controls = document.createElement("div");
+          controls.className = "answer-controls";
+          const answerWrap = document.createElement("div");
+          appendText(answerWrap, "label", "", "Human answer");
           const answerBox = document.createElement("textarea");
           answerBox.value = typeof item.value === "string" && item.value !== "UNKNOWN" ? item.value : "";
           answerBox.placeholder = "Human answer";
+          answerWrap.appendChild(answerBox);
+          const stateWrap = document.createElement("div");
+          appendText(stateWrap, "label", "", "Answer state");
           const stateSelect = document.createElement("select");
           ["PROVIDED", "UNKNOWN", "DEFERRED", "TO_BE_INSPECTED", "NOT_APPLICABLE"].forEach((state) => {
             const option = document.createElement("option");
             option.value = state;
             option.textContent = state;
-            option.selected = state === "PROVIDED";
+            option.selected = state === (item.state === "UNKNOWN" ? "PROVIDED" : item.state || "PROVIDED");
             stateSelect.appendChild(option);
           });
-          card.appendChild(answerBox);
-          card.appendChild(stateSelect);
+          stateWrap.appendChild(stateSelect);
           const answerButton = document.createElement("button");
           answerButton.dataset.action = "answer";
           answerButton.textContent = "Save answer";
@@ -151,7 +212,10 @@
               setStatus(`Answer failed: ${error.message}`);
             }
           };
-          card.appendChild(answerButton);
+          controls.appendChild(answerWrap);
+          controls.appendChild(stateWrap);
+          controls.appendChild(answerButton);
+          card.appendChild(controls);
         }
 
         const actions = document.createElement("div");
@@ -213,6 +277,16 @@
         const card = document.createElement("article");
         card.className = "card";
         appendText(card, "strong", "", "Projection built");
+        if (session.projection.html_path) {
+          const link = document.createElement("a");
+          link.className = "projection-link";
+          link.href = `/api/session/projection-html?dir=${encodeURIComponent(session.session_dir)}`;
+          link.target = "_blank";
+          link.rel = "noopener";
+          link.textContent = "Open visualization";
+          card.appendChild(link);
+          appendText(card, "div", "meta", `HTML: ${session.projection.html_path}`);
+        }
         appendText(card, "div", "value", JSON.stringify(session.projection, null, 2));
         area.appendChild(card);
         setStatus("Projection ready");

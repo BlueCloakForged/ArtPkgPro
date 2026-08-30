@@ -67,6 +67,15 @@ def load_workspace_session(session_dir: str, workspace: str | Path) -> dict[str,
     return session
 
 
+def projection_html_response(session_dir: str, workspace: str | Path) -> tuple[int, dict[str, str], bytes]:
+    resolved_session_dir = resolve_session_dir(session_dir, workspace)
+    html_path = resolved_session_dir / "artpkg-readiness.architecture.html"
+    if not html_path.exists():
+        raise FileNotFoundError("projection HTML has not been generated")
+    body = html_path.read_bytes()
+    return 200, {"Content-Type": "text/html; charset=utf-8", "Content-Length": str(len(body))}, body
+
+
 def archify_config_for_session(session: dict[str, Any]) -> artpkg_archify_runner.ArchifyConfig:
     return artpkg_archify_runner.ArchifyConfig(
         node_executable=os.environ.get("ARTPKG_NODE", "node"),
@@ -130,6 +139,18 @@ class IntakeHandler(BaseHTTPRequestHandler):
                 self._json(200, session_summary(session))
             except Exception as exc:
                 self._json(400, {"error": str(exc)})
+            return
+        if parsed.path == "/api/session/projection-html":
+            try:
+                params = parse_qs(parsed.query)
+                status, headers, body = projection_html_response(params.get("dir", [""])[0], self.workspace)
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                self._json(404, {"error": str(exc)})
             return
         self._json(404, {"error": "not found"})
 

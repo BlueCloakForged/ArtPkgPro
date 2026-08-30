@@ -132,6 +132,29 @@ class IntakeServerTests(unittest.TestCase):
         self.assertEqual("Archify deliver did not create fresh HTML", summary["archify"]["visual_check"]["receipt"]["error"])
         visual.assert_not_called()
 
+    def test_projection_html_response_serves_session_visualization_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            session_dir = workspace / ".artpkg" / "intake_sessions" / "session-1"
+            session_dir.mkdir(parents=True)
+            html_path = session_dir / "artpkg-readiness.architecture.html"
+            html_path.write_text("<html><body>readiness</body></html>", encoding="utf-8")
+
+            status, headers, body = server.projection_html_response(str(session_dir), workspace)
+
+            self.assertEqual(200, status)
+            self.assertEqual("text/html; charset=utf-8", headers["Content-Type"])
+            self.assertIn(b"readiness", body)
+
+    def test_projection_html_response_rejects_missing_visualization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            session_dir = workspace / ".artpkg" / "intake_sessions" / "session-1"
+            session_dir.mkdir(parents=True)
+
+            with self.assertRaisesRegex(FileNotFoundError, "projection HTML has not been generated"):
+                server.projection_html_response(str(session_dir), workspace)
+
     def test_ui_contains_upload_review_and_projection_controls(self):
         html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
         html = html_path.read_text(encoding="utf-8")
@@ -142,6 +165,10 @@ class IntakeServerTests(unittest.TestCase):
         self.assertIn('dataset.action = "reject"', html)
         self.assertIn('dataset.action = "answer"', html)
         self.assertIn('id="buildProjection"', html)
+        self.assertIn("renderQuestionContext", html)
+        self.assertIn("renderRecordContext", html)
+        self.assertIn("Open visualization", html)
+        self.assertIn("/api/session/projection-html", html)
 
     def test_ui_supports_answer_and_record_actions(self):
         html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"

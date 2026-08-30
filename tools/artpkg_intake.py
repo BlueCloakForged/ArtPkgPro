@@ -100,11 +100,59 @@ def _question_text(qid: str) -> str:
     return questionnaire.QUESTION_CATALOG.get(qid, {}).get("prompt", qid)
 
 
+def _question_context(qid: str) -> dict[str, Any]:
+    question = questionnaire.QUESTION_CATALOG.get(qid, {"id": qid, "prompt": qid, "type": "LONG_TEXT"})
+    prefix = "HAR" if qid.startswith("HAR-") else qid.split("-", 1)[0]
+    group, group_description = questionnaire.QUESTION_GROUPS.get(
+        prefix,
+        ("Questionnaire", "Provide the information needed to make this package reviewable."),
+    )
+    guidance = questionnaire.question_guidance(qid, question)
+    return {
+        "group": guidance.get("group", group),
+        "group_description": group_description,
+        "prompt": question.get("prompt", qid),
+        "answer_type": question.get("type", "LONG_TEXT"),
+        "meaning": guidance.get("meaning", group_description),
+        "example": guidance.get("example", "A specific, reviewable answer."),
+        "choices": sorted(questionnaire.ENUM_CHOICES.get(qid, [])),
+    }
+
+
+def _record_context(section: str) -> dict[str, Any]:
+    prefix = questionnaire.ID_PREFIXES.get(section, section.split("_", 1)[0].upper())
+    group, group_description = questionnaire.QUESTION_GROUPS.get(
+        prefix,
+        (section.replace("_", " ").title(), "Review the seeded record fields before accepting them into the package."),
+    )
+    return {
+        "section": section,
+        "label": section.replace("_", " ").title(),
+        "group": group,
+        "group_description": group_description,
+    }
+
+
+def _record_schema(section: str) -> list[dict[str, Any]]:
+    fields = []
+    for name, label, choices in questionnaire.RECORD_FIELDS.get(section, []):
+        meaning, example = questionnaire.record_field_guidance(section, name, label)
+        fields.append({
+            "name": name,
+            "label": label,
+            "meaning": meaning,
+            "example": example,
+            "choices": sorted(choices or []),
+        })
+    return fields
+
+
 def _queue_item(qid: str, item: dict[str, Any], reason: str) -> dict[str, Any]:
     return {
         "kind": "answer",
         "id": qid,
         "label": _question_text(qid),
+        "question": _question_context(qid),
         "state": item.get("state"),
         "value": item.get("value"),
         "confidence_score": item.get("confidence_score"),
@@ -156,6 +204,8 @@ def build_review_queues(document: dict[str, Any], seed: dict[str, Any], validati
                 "id": record["id"],
                 "section": section,
                 "label": section.replace("_", " ").title(),
+                "record_context": _record_context(section),
+                "record_schema": _record_schema(section),
                 "state": disposition,
                 "value": record.get("fields", {}),
                 "confidence_score": record.get("confidence_score"),
