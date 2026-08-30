@@ -28,9 +28,11 @@ execution by its caller. Inspection is not performed by this implementation.
 ## Local intake UI
 
 Use `intake-ui` for browser-assisted review of pre-artifacts input. The UI
-creates a local intake session, shows review queues, and can generate an
-Archify readiness projection for review. ArtPkg validation remains the only
-package readiness calculation.
+creates a local intake session, asks for local restricted-content
+acknowledgement, shows review queues, saves human answers for missing fields,
+confirms or rejects seeded answers and records, and can generate an Archify
+readiness projection for review. ArtPkg validation remains the only package
+readiness calculation.
 
 ```text
 python tools/artifacts_package_questionnaire.py intake-ui --workspace . --port 8765 --open
@@ -45,7 +47,9 @@ information.
 The answer file is atomically replaced after each accepted answer. Repeated
 records use stable IDs such as `ACT-001`, `FR-001`, and `EVD-001`; deleted IDs
 are retained so later records are never renumbered. `UNKNOWN`, `NONE`, and
-`NOT_APPLICABLE` remain distinct values/states.
+`NOT_APPLICABLE` remain distinct values/states. Projection output includes the
+Archify IR, mapping sidecar, projection-validation sidecar, rendered HTML, and
+validate/deliver/visual-check receipts in the session directory.
 
 ## Terminal guidance and routing
 

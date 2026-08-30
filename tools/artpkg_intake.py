@@ -150,12 +150,13 @@ def build_review_queues(document: dict[str, Any], seed: dict[str, Any], validati
 
     for section, records in sorted(document.get("records", {}).items()):
         for record in records:
+            disposition = record.get("review_disposition", "SEEDED_PENDING_REVIEW")
             review_item = {
                 "kind": "record",
                 "id": record["id"],
                 "section": section,
                 "label": section.replace("_", " ").title(),
-                "state": record.get("review_disposition", "SEEDED_PENDING_REVIEW"),
+                "state": disposition,
                 "value": record.get("fields", {}),
                 "confidence_score": record.get("confidence_score"),
                 "review_priority": record.get("review_priority"),
@@ -163,7 +164,12 @@ def build_review_queues(document: dict[str, Any], seed: dict[str, Any], validati
                 "source_reference": record.get("source_reference"),
                 "reason": "seeded record needs human review",
             }
-            if record.get("confidence_score", 0) < 90:
+            if disposition == "HUMAN_CONFIRMED":
+                continue
+            if disposition == "HUMAN_REJECTED":
+                review_item["reason"] = "seeded record was rejected and needs replacement"
+                queues["needs_answer"].append(review_item)
+            elif record.get("confidence_score", 0) < 90:
                 queues["needs_confirmation"].append(review_item)
             else:
                 queues["ready_for_quick_review"].append(review_item)
@@ -197,6 +203,25 @@ def confirm_answer(session: dict[str, Any], question_id: str, reviewer: str) -> 
     return item
 
 
+def provide_answer(session: dict[str, Any], question_id: str, value: Any, reviewer: str, state: str = "PROVIDED") -> dict[str, Any]:
+    if state == "PROVIDED" and value in {"", None}:
+        raise ValueError("provided answers require a value")
+    questionnaire.set_answer(
+        session["document"],
+        question_id,
+        value,
+        state,
+        "HUMAN_DECLARATION",
+        "ArtPkg intake UI",
+    )
+    item = session["document"]["answers"][question_id]
+    item["review_disposition"] = "HUMAN_CONFIRMED"
+    item["reviewer"] = reviewer
+    item["last_edit_timestamp"] = now()
+    _refresh_session(session)
+    return item
+
+
 def reject_seeded_answer(session: dict[str, Any], question_id: str, reason: str, reviewer: str) -> dict[str, Any]:
     item = session["document"]["answers"][question_id]
     item["review_disposition"] = "HUMAN_REJECTED"
@@ -205,6 +230,25 @@ def reject_seeded_answer(session: dict[str, Any], question_id: str, reason: str,
     item["last_edit_timestamp"] = now()
     _refresh_session(session)
     return item
+
+
+def confirm_record(session: dict[str, Any], record_id: str, reviewer: str) -> dict[str, Any]:
+    record = questionnaire.find_record(session["document"], record_id)
+    record["review_disposition"] = "HUMAN_CONFIRMED"
+    record["reviewer"] = reviewer
+    record["last_edit"] = now()
+    _refresh_session(session)
+    return record
+
+
+def reject_seeded_record(session: dict[str, Any], record_id: str, reason: str, reviewer: str) -> dict[str, Any]:
+    record = questionnaire.find_record(session["document"], record_id)
+    record["review_disposition"] = "HUMAN_REJECTED"
+    record["rejection_reason"] = reason
+    record["reviewer"] = reviewer
+    record["last_edit"] = now()
+    _refresh_session(session)
+    return record
 
 
 def _refresh_session(session: dict[str, Any]) -> None:

@@ -13,7 +13,10 @@
     aside { border-right:1px solid #d8dee6; background:#fff; padding:18px; }
     section { padding:18px 22px; }
     label { display:block; font-weight:650; margin-bottom:8px; }
-    input[type=file] { width:100%; border:1px solid #b8c2cc; border-radius:6px; padding:10px; background:#fff; }
+    input[type=file], textarea, select { width:100%; box-sizing:border-box; border:1px solid #b8c2cc; border-radius:6px; padding:10px; background:#fff; }
+    textarea { min-height:84px; resize:vertical; font-family:Consolas, monospace; font-size:12px; }
+    .check { display:flex; align-items:flex-start; gap:8px; font-size:13px; line-height:1.35; }
+    .check input { margin-top:2px; }
     button { border:1px solid #8795a5; background:#fff; border-radius:6px; padding:8px 11px; cursor:pointer; }
     button:disabled { cursor:not-allowed; opacity:0.55; }
     button.primary { background:#174ea6; border-color:#174ea6; color:#fff; }
@@ -41,6 +44,10 @@
         <label for="preArtifactsFile">Pre-artifacts file</label>
         <input id="preArtifactsFile" type="file" accept=".md,.markdown,.txt">
       </div>
+      <label class="check">
+        <input id="restrictedAck" type="checkbox">
+        <span>I have checked this local upload for secrets, credentials, regulated data, and restricted content handling.</span>
+      </label>
       <button class="primary" id="upload">Start questionnaire</button>
       <button id="buildProjection">Build readiness projection</button>
       <div id="sessionMeta" class="status"></div>
@@ -71,6 +78,25 @@
       return data;
     }
 
+    function appendText(parent, tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      element.textContent = text;
+      parent.appendChild(element);
+      return element;
+    }
+
+    function actionPayload(item) {
+      return item.kind === "record"
+        ? { session_dir:session.session_dir, record_id:item.id, reviewer:"UI reviewer" }
+        : { session_dir:session.session_dir, question_id:item.id, reviewer:"UI reviewer" };
+    }
+
+    function actionUrl(item, action) {
+      if (item.kind === "record") return `/api/session/record/${action}`;
+      return action === "confirm" ? "/api/session/confirm" : "/api/session/reject";
+    }
+
     function render() {
       if (!session) return;
       document.getElementById("sessionMeta").textContent = `Session: ${session.session_id}`;
@@ -89,39 +115,76 @@
       (session.review_queues[activeQueue] || []).forEach((item) => {
         const card = document.createElement("article");
         card.className = "card";
-        const answerActionable = item.kind === "answer";
-        card.innerHTML = `
-          <strong>${item.id} ${item.label || ""}</strong>
-          <div class="meta">${item.reason || ""} | ${item.state || ""} | ${item.source_type || ""} | confidence ${item.confidence_score ?? "n/a"}</div>
-          <div class="value"></div>
-          <div class="actions">
-            <button data-action="confirm" ${answerActionable ? "" : "disabled"}>Confirm</button>
-            <button data-action="reject" class="danger" ${answerActionable ? "" : "disabled"}>Reject</button>
-          </div>
-          ${answerActionable ? "" : '<div class="status">Record review is not yet answer-actionable in this slice.</div>'}
-        `;
-        card.querySelector(".value").textContent = typeof item.value === "string" ? item.value : JSON.stringify(item.value, null, 2);
-        if (answerActionable) {
-          card.querySelector('[data-action="confirm"]').onclick = async () => {
+        appendText(card, "strong", "", `${item.id} ${item.label || ""}`);
+        appendText(card, "div", "meta", `${item.reason || ""} | ${item.state || ""} | ${item.source_type || ""} | confidence ${item.confidence_score ?? "n/a"}`);
+        appendText(card, "div", "value", typeof item.value === "string" ? item.value : JSON.stringify(item.value, null, 2));
+
+        if (item.kind === "answer") {
+          const answerBox = document.createElement("textarea");
+          answerBox.value = typeof item.value === "string" && item.value !== "UNKNOWN" ? item.value : "";
+          answerBox.placeholder = "Human answer";
+          const stateSelect = document.createElement("select");
+          ["PROVIDED", "UNKNOWN", "DEFERRED", "TO_BE_INSPECTED", "NOT_APPLICABLE"].forEach((state) => {
+            const option = document.createElement("option");
+            option.value = state;
+            option.textContent = state;
+            option.selected = state === "PROVIDED";
+            stateSelect.appendChild(option);
+          });
+          card.appendChild(answerBox);
+          card.appendChild(stateSelect);
+          const answerButton = document.createElement("button");
+          answerButton.dataset.action = "answer";
+          answerButton.textContent = "Save answer";
+          answerButton.onclick = async () => {
             try {
-              session = await postJson("/api/session/confirm", { session_dir:session.session_dir, question_id:item.id, reviewer:"UI reviewer" });
-              setStatus("Answer confirmed");
+              session = await postJson("/api/session/answer", {
+                session_dir:session.session_dir,
+                question_id:item.id,
+                value:answerBox.value,
+                state:stateSelect.value,
+                reviewer:"UI reviewer"
+              });
+              setStatus("Answer saved");
               render();
             } catch (error) {
-              setStatus(`Confirm failed: ${error.message}`);
+              setStatus(`Answer failed: ${error.message}`);
             }
           };
-          card.querySelector('[data-action="reject"]').onclick = async () => {
-            const reason = prompt("Why is this seeded value rejected?") || "Rejected in UI";
-            try {
-              session = await postJson("/api/session/reject", { session_dir:session.session_dir, question_id:item.id, reason, reviewer:"UI reviewer" });
-              setStatus("Answer rejected");
-              render();
-            } catch (error) {
-              setStatus(`Reject failed: ${error.message}`);
-            }
-          };
+          card.appendChild(answerButton);
         }
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const confirmButton = document.createElement("button");
+        confirmButton.dataset.action = "confirm";
+        confirmButton.textContent = "Confirm";
+        confirmButton.onclick = async () => {
+          try {
+            session = await postJson(actionUrl(item, "confirm"), actionPayload(item));
+            setStatus(`${item.kind === "record" ? "Record" : "Answer"} confirmed`);
+            render();
+          } catch (error) {
+            setStatus(`Confirm failed: ${error.message}`);
+          }
+        };
+        const rejectButton = document.createElement("button");
+        rejectButton.dataset.action = "reject";
+        rejectButton.className = "danger";
+        rejectButton.textContent = "Reject";
+        rejectButton.onclick = async () => {
+          const reason = prompt("Why is this seeded item rejected?") || "Rejected in UI";
+          try {
+            session = await postJson(actionUrl(item, "reject"), { ...actionPayload(item), reason });
+            setStatus(`${item.kind === "record" ? "Record" : "Answer"} rejected`);
+            render();
+          } catch (error) {
+            setStatus(`Reject failed: ${error.message}`);
+          }
+        };
+        actions.appendChild(confirmButton);
+        actions.appendChild(rejectButton);
+        card.appendChild(actions);
         list.appendChild(card);
       });
     }
@@ -129,6 +192,7 @@
     document.getElementById("upload").onclick = async () => {
       const file = document.getElementById("preArtifactsFile").files[0];
       if (!file) { setStatus("Choose a pre-artifacts file first"); return; }
+      if (!document.getElementById("restrictedAck").checked) { setStatus("Confirm local restricted-content handling before upload"); return; }
       const body = new FormData();
       body.append("file", file);
       setStatus("Creating intake session");
@@ -145,7 +209,12 @@
       try {
         session = await postJson("/api/session/project", { session_dir:session.session_dir });
         const area = document.getElementById("projectionArea");
-        area.innerHTML = `<article class="card"><strong>Projection built</strong><div class="value">${JSON.stringify(session.projection, null, 2)}</div></article>`;
+        area.innerHTML = "";
+        const card = document.createElement("article");
+        card.className = "card";
+        appendText(card, "strong", "", "Projection built");
+        appendText(card, "div", "value", JSON.stringify(session.projection, null, 2));
+        area.appendChild(card);
         setStatus("Projection ready");
         render();
       } catch (error) {

@@ -2,6 +2,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
@@ -80,18 +82,48 @@ class IntakeServerTests(unittest.TestCase):
 
             self.assertEqual(str(session_dir.resolve()), session["session_dir"])
 
+    def test_build_projection_summary_runs_archify_receipts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ir_path = Path(temp_dir) / "artpkg-readiness.architecture.json"
+            ir_path.write_text("{}", encoding="utf-8")
+            projection = SimpleNamespace(
+                ir_path=str(ir_path),
+                mapping_path=str(Path(temp_dir) / "artpkg-readiness.mapping.json"),
+                validation_path=str(Path(temp_dir) / "artpkg-readiness.projection-validation.json"),
+            )
+            def deliver_receipt(_config, _kind, _ir, html):
+                Path(html).write_text("<html></html>", encoding="utf-8")
+                return {"ok": True, "receipt_path": "deliver.json"}
+
+            with patch("artpkg_intake_server.artpkg_archify_projection.build_readiness_projection", return_value=projection), \
+                    patch("artpkg_intake_server.artpkg_archify_runner.run_archify_validate", return_value={"ok": True, "receipt_path": "validate.json"}) as validate, \
+                    patch("artpkg_intake_server.artpkg_archify_runner.run_archify_deliver", side_effect=deliver_receipt) as deliver, \
+                    patch("artpkg_intake_server.artpkg_archify_runner.run_archify_visual_check", return_value={"ok": True, "receipt_path": "visual.json"}) as visual:
+                summary = server.build_projection_summary({"session_dir": temp_dir})
+
+        self.assertEqual(str(ir_path), summary["ir_path"])
+        self.assertEqual(str(ir_path.with_suffix(".html")), summary["html_path"])
+        self.assertEqual("validate.json", summary["archify"]["validate"]["receipt_path"])
+        self.assertEqual("deliver.json", summary["archify"]["deliver"]["receipt_path"])
+        self.assertEqual("visual.json", summary["archify"]["visual_check"]["receipt_path"])
+        validate.assert_called_once()
+        deliver.assert_called_once()
+        visual.assert_called_once()
+
     def test_ui_contains_upload_review_and_projection_controls(self):
         html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
         html = html_path.read_text(encoding="utf-8")
         self.assertIn('id="preArtifactsFile"', html)
+        self.assertIn('id="restrictedAck"', html)
         self.assertIn('id="reviewQueues"', html)
-        self.assertIn('data-action="confirm"', html)
-        self.assertIn('data-action="reject"', html)
+        self.assertIn('dataset.action = "confirm"', html)
+        self.assertIn('dataset.action = "reject"', html)
+        self.assertIn('dataset.action = "answer"', html)
         self.assertIn('id="buildProjection"', html)
 
-    def test_ui_disables_unsupported_record_actions(self):
+    def test_ui_supports_answer_and_record_actions(self):
         html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
         html = html_path.read_text(encoding="utf-8")
-        self.assertIn('item.kind === "answer"', html)
-        self.assertIn('"disabled"', html)
-        self.assertIn("Record review is not yet answer-actionable in this slice.", html)
+        self.assertIn("/api/session/answer", html)
+        self.assertIn('/api/session/record/${action}', html)
+        self.assertNotIn("Record review is not yet answer-actionable in this slice.", html)

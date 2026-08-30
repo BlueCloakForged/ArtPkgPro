@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import tempfile
 import webbrowser
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 import artpkg_intake
 import artpkg_archify_projection
+import artpkg_archify_runner
 
 
 @dataclass
@@ -63,6 +65,39 @@ def load_workspace_session(session_dir: str, workspace: str | Path) -> dict[str,
     session = artpkg_intake.load_intake_session(resolved_session_dir)
     session["session_dir"] = str(resolved_session_dir)
     return session
+
+
+def archify_config_for_session(session: dict[str, Any]) -> artpkg_archify_runner.ArchifyConfig:
+    return artpkg_archify_runner.ArchifyConfig(
+        node_executable=os.environ.get("ARTPKG_NODE", "node"),
+        archify_root=os.environ.get("ARTPKG_ARCHIFY_ROOT", "D:/archify/archify"),
+        quality=os.environ.get("ARTPKG_ARCHIFY_QUALITY", "showcase"),
+        receipt_dir=session["session_dir"],
+    )
+
+
+def build_projection_summary(session: dict[str, Any]) -> dict[str, Any]:
+    result = artpkg_archify_projection.build_readiness_projection(session)
+    config = archify_config_for_session(session)
+    html_path = str(Path(result.ir_path).with_suffix(".html"))
+    validate = artpkg_archify_runner.run_archify_validate(config, "architecture", result.ir_path)
+    deliver = artpkg_archify_runner.run_archify_deliver(config, "architecture", result.ir_path, html_path)
+    visual = artpkg_archify_runner.run_archify_visual_check(config, html_path) if Path(html_path).exists() else {
+        "ok": False,
+        "operation": "visual-check",
+        "receipt": {"ok": False, "error": "Archify deliver did not create HTML"},
+    }
+    return {
+        "ir_path": result.ir_path,
+        "mapping_path": result.mapping_path,
+        "validation_path": result.validation_path,
+        "html_path": html_path,
+        "archify": {
+            "validate": validate,
+            "deliver": deliver,
+            "visual_check": visual,
+        },
+    }
 
 
 class IntakeHandler(BaseHTTPRequestHandler):
@@ -119,14 +154,31 @@ class IntakeHandler(BaseHTTPRequestHandler):
                 artpkg_intake.confirm_answer(session, payload["question_id"], payload.get("reviewer", "UI reviewer"))
                 self._json(200, session_summary(session))
                 return
+            if parsed.path == "/api/session/answer":
+                artpkg_intake.provide_answer(
+                    session,
+                    payload["question_id"],
+                    payload.get("value"),
+                    payload.get("reviewer", "UI reviewer"),
+                    payload.get("state", "PROVIDED"),
+                )
+                self._json(200, session_summary(session))
+                return
             if parsed.path == "/api/session/reject":
                 artpkg_intake.reject_seeded_answer(session, payload["question_id"], payload.get("reason", "Rejected in UI"), payload.get("reviewer", "UI reviewer"))
                 self._json(200, session_summary(session))
                 return
+            if parsed.path == "/api/session/record/confirm":
+                artpkg_intake.confirm_record(session, payload["record_id"], payload.get("reviewer", "UI reviewer"))
+                self._json(200, session_summary(session))
+                return
+            if parsed.path == "/api/session/record/reject":
+                artpkg_intake.reject_seeded_record(session, payload["record_id"], payload.get("reason", "Rejected in UI"), payload.get("reviewer", "UI reviewer"))
+                self._json(200, session_summary(session))
+                return
             if parsed.path == "/api/session/project":
-                result = artpkg_archify_projection.build_readiness_projection(session)
                 summary = session_summary(session)
-                summary["projection"] = {"ir_path": result.ir_path, "mapping_path": result.mapping_path, "validation_path": result.validation_path}
+                summary["projection"] = build_projection_summary(session)
                 self._json(200, summary)
                 return
             self._json(404, {"error": "not found"})

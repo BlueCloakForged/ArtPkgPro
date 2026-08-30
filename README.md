@@ -48,8 +48,10 @@ Do not enter passwords, API keys, tokens, credentials, private payloads, or regu
 
 ## Start the local intake UI
 
-The local intake UI lets a reviewer upload or select a pre-artifacts Markdown
-file, seed a draft questionnaire, and review fields grouped by urgency.
+The local intake UI lets a reviewer upload a pre-artifacts Markdown file,
+acknowledge local restricted-content handling, seed a draft questionnaire,
+save human answers for missing fields, confirm/reject seeded answers and
+records, and review fields grouped by urgency.
 
 ```text
 python tools/artifacts_package_questionnaire.py intake-ui --workspace . --port 8765 --open
@@ -59,7 +61,9 @@ The UI is ArtPkg-owned. It does not grant approval, implementation authority,
 execution authority, publication authority, deployment authority, or permission
 to process sensitive content. Local sessions are written under `.artpkg/` and
 are gitignored because they can contain project-specific or restricted
-information.
+information. Building a readiness projection writes Archify IR, mapping,
+projection-validation, rendered HTML, and local Archify receipt files into the
+session directory.
 
 ## Resume a saved questionnaire
 

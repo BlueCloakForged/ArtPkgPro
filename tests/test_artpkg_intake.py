@@ -25,6 +25,9 @@ class IntakeSessionTests(unittest.TestCase):
             "- This file is discovery context; it is not an approved implementation contract.\n"
             "## 14. Evidence and Validation\n"
             "- What is still unverified? Runtime behavior has not been validated.\n\n"
+            "## 7. Requirements\n"
+            "### Functional Requirements\n"
+            "- FR-01: The intake UI shall let reviewers resolve seeded questionnaire gaps.\n\n"
             "## 19. Sensitive or Restricted Content\n"
             "- Does this project involve sensitive data, credentials, regulated information, or restricted content? Yes\n"
             "- If yes, what safeguards are required? Local-only handling and redaction.\n"
@@ -108,6 +111,46 @@ class IntakeSessionTests(unittest.TestCase):
         self.assertEqual("HUMAN_CONFIRMED", reloaded["document"]["answers"]["PKG-001"]["review_disposition"])
         self.assertEqual("HUMAN_REJECTED", reloaded["document"]["answers"]["PKG-003"]["review_disposition"])
         self.assertEqual("Owner must be named by human", reloaded["document"]["answers"]["PKG-003"]["rejection_reason"])
+
+    def test_provide_answer_replaces_rejected_seed_with_human_declaration(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+
+        intake.reject_seeded_answer(session, "PKG-003", reason="Owner must be named by human", reviewer="Reviewer")
+        updated = intake.provide_answer(session, "PKG-003", "Vin", reviewer="Reviewer")
+        reloaded = intake.load_intake_session(session["session_dir"])
+        needs_answer_ids = {item["id"] for item in reloaded["review_queues"]["needs_answer"]}
+
+        self.assertEqual("Vin", updated["value"])
+        self.assertEqual("PROVIDED", updated["state"])
+        self.assertEqual("HUMAN_DECLARATION", updated["source_type"])
+        self.assertEqual("HUMAN_CONFIRMED", updated["review_disposition"])
+        self.assertNotIn("PKG-003", needs_answer_ids)
+
+    def test_confirm_and_reject_seeded_records_are_durable(self):
+        session = intake.create_intake_session(
+            self.pre,
+            self.root,
+            template_path=self.template,
+            respondent="Reviewer",
+        )
+        record_id = next(iter(session["created_records"].values()))[0]
+
+        confirmed = intake.confirm_record(session, record_id, reviewer="Reviewer")
+        self.assertEqual("HUMAN_CONFIRMED", confirmed["review_disposition"])
+
+        rejected = intake.reject_seeded_record(session, record_id, "Record needs replacement", reviewer="Reviewer")
+        reloaded = intake.load_intake_session(session["session_dir"])
+        needs_answer_ids = {item["id"] for item in reloaded["review_queues"]["needs_answer"]}
+
+        self.assertEqual("HUMAN_REJECTED", rejected["review_disposition"])
+        self.assertEqual("Record needs replacement", rejected["rejection_reason"])
+        self.assertEqual("HUMAN_REJECTED", intake.questionnaire.find_record(reloaded["document"], record_id)["review_disposition"])
+        self.assertIn(record_id, needs_answer_ids)
 
     def test_rejected_sensitive_answers_remain_in_specialist_queues(self):
         session = intake.create_intake_session(
