@@ -15,6 +15,7 @@
     label { display:block; font-weight:650; margin-bottom:8px; }
     input[type=file] { width:100%; border:1px solid #b8c2cc; border-radius:6px; padding:10px; background:#fff; }
     button { border:1px solid #8795a5; background:#fff; border-radius:6px; padding:8px 11px; cursor:pointer; }
+    button:disabled { cursor:not-allowed; opacity:0.55; }
     button.primary { background:#174ea6; border-color:#174ea6; color:#fff; }
     button.danger { border-color:#b42318; color:#b42318; }
     .stack { display:grid; gap:12px; }
@@ -88,25 +89,39 @@
       (session.review_queues[activeQueue] || []).forEach((item) => {
         const card = document.createElement("article");
         card.className = "card";
+        const answerActionable = item.kind === "answer";
         card.innerHTML = `
           <strong>${item.id} ${item.label || ""}</strong>
           <div class="meta">${item.reason || ""} | ${item.state || ""} | ${item.source_type || ""} | confidence ${item.confidence_score ?? "n/a"}</div>
           <div class="value"></div>
           <div class="actions">
-            <button data-action="confirm">Confirm</button>
-            <button data-action="reject" class="danger">Reject</button>
+            <button data-action="confirm" ${answerActionable ? "" : "disabled"}>Confirm</button>
+            <button data-action="reject" class="danger" ${answerActionable ? "" : "disabled"}>Reject</button>
           </div>
+          ${answerActionable ? "" : '<div class="status">Record review is not yet answer-actionable in this slice.</div>'}
         `;
         card.querySelector(".value").textContent = typeof item.value === "string" ? item.value : JSON.stringify(item.value, null, 2);
-        card.querySelector('[data-action="confirm"]').onclick = async () => {
-          session = await postJson("/api/session/confirm", { session_dir:session.session_dir, question_id:item.id, reviewer:"UI reviewer" });
-          render();
-        };
-        card.querySelector('[data-action="reject"]').onclick = async () => {
-          const reason = prompt("Why is this seeded value rejected?") || "Rejected in UI";
-          session = await postJson("/api/session/reject", { session_dir:session.session_dir, question_id:item.id, reason, reviewer:"UI reviewer" });
-          render();
-        };
+        if (answerActionable) {
+          card.querySelector('[data-action="confirm"]').onclick = async () => {
+            try {
+              session = await postJson("/api/session/confirm", { session_dir:session.session_dir, question_id:item.id, reviewer:"UI reviewer" });
+              setStatus("Answer confirmed");
+              render();
+            } catch (error) {
+              setStatus(`Confirm failed: ${error.message}`);
+            }
+          };
+          card.querySelector('[data-action="reject"]').onclick = async () => {
+            const reason = prompt("Why is this seeded value rejected?") || "Rejected in UI";
+            try {
+              session = await postJson("/api/session/reject", { session_dir:session.session_dir, question_id:item.id, reason, reviewer:"UI reviewer" });
+              setStatus("Answer rejected");
+              render();
+            } catch (error) {
+              setStatus(`Reject failed: ${error.message}`);
+            }
+          };
+        }
         list.appendChild(card);
       });
     }
@@ -127,11 +142,15 @@
     document.getElementById("buildProjection").onclick = async () => {
       if (!session) { setStatus("Start a session first"); return; }
       setStatus("Building readiness projection");
-      session = await postJson("/api/session/project", { session_dir:session.session_dir });
-      const area = document.getElementById("projectionArea");
-      area.innerHTML = `<article class="card"><strong>Projection built</strong><div class="value">${JSON.stringify(session.projection, null, 2)}</div></article>`;
-      setStatus("Projection ready");
-      render();
+      try {
+        session = await postJson("/api/session/project", { session_dir:session.session_dir });
+        const area = document.getElementById("projectionArea");
+        area.innerHTML = `<article class="card"><strong>Projection built</strong><div class="value">${JSON.stringify(session.projection, null, 2)}</div></article>`;
+        setStatus("Projection ready");
+        render();
+      } catch (error) {
+        setStatus(`Projection failed: ${error.message}`);
+      }
     };
   </script>
 </body>

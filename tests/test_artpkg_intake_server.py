@@ -88,3 +88,10 @@ class IntakeServerTests(unittest.TestCase):
         self.assertIn('data-action="confirm"', html)
         self.assertIn('data-action="reject"', html)
         self.assertIn('id="buildProjection"', html)
+
+    def test_ui_disables_unsupported_record_actions(self):
+        html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
+        html = html_path.read_text(encoding="utf-8")
+        self.assertIn('item.kind === "answer"', html)
+        self.assertIn('"disabled"', html)
+        self.assertIn("Record review is not yet answer-actionable in this slice.", html)
