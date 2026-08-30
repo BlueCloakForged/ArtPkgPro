@@ -56,6 +56,7 @@ def _component(component_id: str, kind: str, label: str, sublabel: str, x: int, 
 def build_readiness_projection(session: dict[str, Any], output_dir: str | Path | None = None) -> ProjectionResult:
     document = session["document"]
     validation = questionnaire.validate_answers(document)
+    validation["projection_trust"] = _projection_trust(session)
     session["validation"] = validation
     root = Path(output_dir or session["session_dir"]).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -291,10 +292,23 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _projection_trust(session: dict[str, Any]) -> dict[str, str]:
+    session_dir = Path(session["session_dir"]).expanduser().resolve()
+    source_path = (session_dir / CANONICAL_SOURCE_NAME).resolve()
+    answers_path = (session_dir / CANONICAL_ANSWERS_NAME).resolve()
+    return {
+        "session_dir": str(session_dir),
+        "source_pre_artifacts_path": str(source_path),
+        "answers_path": str(answers_path),
+        "source_sha256": _sha256_file(source_path),
+        "answers_sha256": _sha256_file(answers_path),
+    }
+
+
 def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     expectations = ir.get("meta", {}).get("projection_expectations", {})
-    source_context = _read_projection_sources(expectations, mapping)
+    source_context = _read_projection_sources(validation, expectations, mapping)
     issues.extend(source_context["issues"])
     component_ids = {component["id"] for component in ir.get("components", [])}
     components_by_id = {component["id"]: component for component in ir.get("components", [])}
@@ -304,8 +318,7 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
     source_document = source_context.get("document")
     known_records = set(_known_artpkg_ids(source_document)) if isinstance(source_document, dict) else set(expectations.get("known_artpkg_ids", []))
     expected_aggregations = expectations.get("aggregations", {})
-    actual_source_digest = source_context.get("source_digest")
-    expected_source_digest = actual_source_digest or expectations.get("source_artifact_sha256")
+    expected_source_digest = source_context.get("trusted_source_digest")
     actual_authority = _source_answer(source_document, "AUT-001") if isinstance(source_document, dict) else None
     actual_evidence_support = _source_evidence_supports_verified(source_document) if isinstance(source_document, dict) else False
     source_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "SOURCE_ARTIFACT"]
@@ -324,7 +337,7 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
             issues.append({"code": "SOURCE_DIGEST_MALFORMED", "subject": "inputs"})
     if _is_sha256_digest(expected_source_digest) and input_digests != {expected_source_digest}:
         issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "inputs"})
-    if actual_source_digest and expectations.get("source_artifact_sha256") != actual_source_digest:
+    if expectations.get("source_artifact_sha256") != expected_source_digest:
         issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "ir.meta"})
     for node in mapping.get("nodes", []):
         archify_id = node.get("archify_id", "UNKNOWN")
@@ -381,22 +394,57 @@ def _is_sha256_digest(value: Any) -> bool:
     return isinstance(value, str) and SHA256_RE.fullmatch(value) is not None
 
 
-def _read_projection_sources(expectations: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Any]:
+def _read_projection_sources(
+    validation: dict[str, Any],
+    expectations: dict[str, Any],
+    mapping: dict[str, Any],
+) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     source_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "SOURCE_ARTIFACT"]
     answers_inputs = [item for item in mapping.get("inputs", []) if item.get("role") == "ARTPKG_ANSWERS"]
     context: dict[str, Any] = {"issues": issues}
-    session_dir = _absolute_resolved_path(expectations.get("session_dir"))
-    mapping_session_dir = _absolute_resolved_path(mapping.get("session_dir"))
-
-    if session_dir is None:
-        issues.append({"code": "SESSION_DIR_MISSING", "subject": "ir.meta.projection_expectations"})
+    trust = validation.get("projection_trust")
+    required_anchors = {
+        "session_dir",
+        "source_pre_artifacts_path",
+        "answers_path",
+        "source_sha256",
+        "answers_sha256",
+    }
+    if not isinstance(trust, dict):
+        issues.append({"code": "PROJECTION_TRUST_MISSING", "subject": "validation.projection_trust"})
         return context
-    if mapping_session_dir != session_dir:
-        issues.append({"code": "SESSION_DIR_MISMATCH", "subject": "mapping.session_dir"})
+    missing_anchors = sorted(required_anchors - set(trust))
+    for anchor in missing_anchors:
+        issues.append({"code": "PROJECTION_TRUST_MISSING", "subject": f"validation.projection_trust.{anchor}"})
+    if missing_anchors:
+        return context
+
+    session_dir = _absolute_resolved_path(trust.get("session_dir"))
+    trusted_source_path = _absolute_resolved_path(trust.get("source_pre_artifacts_path"))
+    trusted_answers_path = _absolute_resolved_path(trust.get("answers_path"))
+    trusted_source_digest = trust.get("source_sha256")
+    trusted_answers_digest = trust.get("answers_sha256")
+    if session_dir is None or trusted_source_path is None or trusted_answers_path is None:
+        issues.append({"code": "PROJECTION_TRUST_INVALID", "subject": "validation.projection_trust.paths"})
+        return context
+    if not _is_sha256_digest(trusted_source_digest) or not _is_sha256_digest(trusted_answers_digest):
+        issues.append({"code": "PROJECTION_TRUST_INVALID", "subject": "validation.projection_trust.digests"})
+        return context
 
     canonical_source_path = (session_dir / CANONICAL_SOURCE_NAME).resolve()
     canonical_answers_path = (session_dir / CANONICAL_ANSWERS_NAME).resolve()
+    context["trusted_source_digest"] = trusted_source_digest
+    if trusted_source_path != canonical_source_path or trusted_answers_path != canonical_answers_path:
+        issues.append({"code": "PROJECTION_TRUST_MISMATCH", "subject": "validation.projection_trust.paths"})
+
+    ir_session_dir = _absolute_resolved_path(expectations.get("session_dir"))
+    mapping_session_dir = _absolute_resolved_path(mapping.get("session_dir"))
+
+    if ir_session_dir != session_dir:
+        issues.append({"code": "SESSION_DIR_MISMATCH", "subject": "ir.meta.projection_expectations.session_dir"})
+    if mapping_session_dir != session_dir:
+        issues.append({"code": "SESSION_DIR_MISMATCH", "subject": "mapping.session_dir"})
 
     if len(source_inputs) != 1:
         issues.append({"code": "SOURCE_FILE_UNREADABLE", "subject": "SOURCE_ARTIFACT"})
@@ -405,6 +453,8 @@ def _read_projection_sources(expectations: dict[str, Any], mapping: dict[str, An
             issues.append({"code": "SOURCE_PATH_MISMATCH", "subject": str(source_inputs[0].get("stored_path"))})
     try:
         context["source_digest"] = _sha256_file(canonical_source_path)
+        if context["source_digest"] != trusted_source_digest:
+            issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "validation.projection_trust.source_sha256"})
     except (OSError, TypeError, ValueError):
         issues.append({"code": "SOURCE_FILE_UNREADABLE", "subject": str(canonical_source_path)})
 
@@ -414,6 +464,9 @@ def _read_projection_sources(expectations: dict[str, Any], mapping: dict[str, An
         if _absolute_resolved_path(answers_inputs[0].get("path")) != canonical_answers_path:
             issues.append({"code": "ANSWERS_PATH_MISMATCH", "subject": str(answers_inputs[0].get("path"))})
     try:
+        answers_digest = _sha256_file(canonical_answers_path)
+        if answers_digest != trusted_answers_digest:
+            issues.append({"code": "ANSWERS_DIGEST_MISMATCH", "subject": "validation.projection_trust.answers_sha256"})
         context["document"] = questionnaire.load_answers(str(canonical_answers_path))
     except (OSError, TypeError, ValueError):
         issues.append({"code": "ANSWERS_FILE_UNREADABLE", "subject": str(canonical_answers_path)})

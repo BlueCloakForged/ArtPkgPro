@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -45,6 +46,17 @@ class ArchifyProjectionTests(unittest.TestCase):
         expected_session_dir = str(Path(self.session["session_dir"]).resolve())
         self.assertEqual(expected_session_dir, result.ir["meta"]["projection_expectations"]["session_dir"])
         self.assertEqual(expected_session_dir, result.mapping["session_dir"])
+        expected_answers_path = Path(self.session["answers_path"]).resolve()
+        self.assertEqual(
+            {
+                "session_dir": expected_session_dir,
+                "source_pre_artifacts_path": str(Path(self.session["source"]["stored_path"]).resolve()),
+                "answers_path": str(expected_answers_path),
+                "source_sha256": self.session["source"]["sha256"],
+                "answers_sha256": hashlib.sha256(expected_answers_path.read_bytes()).hexdigest(),
+            },
+            self.session["validation"].get("projection_trust"),
+        )
 
         component_ids = {component["id"] for component in result.ir["components"]}
         mapped_node_ids = {node["archify_id"] for node in result.mapping["nodes"]}
@@ -261,9 +273,11 @@ class ArchifyProjectionTests(unittest.TestCase):
         }
 
         expectations = result.ir["meta"]["projection_expectations"]
+        expectations["session_dir"] = str(Path(substituted_session["session_dir"]).resolve())
         expectations["source_artifact_sha256"] = substituted_session["source"]["sha256"]
         expectations["authority"] = substituted_authority
         expectations["evidence_verified_supported"] = False
+        result.mapping["session_dir"] = expectations["session_dir"]
         for item in result.mapping["inputs"]:
             if item["role"] == "SOURCE_ARTIFACT":
                 item["path"] = substituted_session["source"]["path"]
@@ -280,8 +294,28 @@ class ArchifyProjectionTests(unittest.TestCase):
         checked = projection.validate_projection_mapping(result.ir, result.mapping, self.session["validation"])
         issue_codes = {issue["code"] for issue in checked["issues"]}
         self.assertEqual("BLOCKED", checked["status"])
+        self.assertIn("SESSION_DIR_MISMATCH", issue_codes)
         self.assertIn("SOURCE_PATH_MISMATCH", issue_codes)
         self.assertIn("ANSWERS_PATH_MISMATCH", issue_codes)
+
+    def test_projection_rejects_missing_trusted_validation_anchors(self):
+        result = projection.build_readiness_projection(self.session)
+        anchors = tuple(self.session["validation"]["projection_trust"])
+        missing_variants = [("projection_trust", None)] + [(anchor, anchor) for anchor in anchors]
+
+        for label, missing_anchor in missing_variants:
+            with self.subTest(missing=label):
+                validation_without_trust = dict(self.session["validation"])
+                if missing_anchor is None:
+                    validation_without_trust.pop("projection_trust")
+                else:
+                    validation_without_trust["projection_trust"] = dict(validation_without_trust["projection_trust"])
+                    validation_without_trust["projection_trust"].pop(missing_anchor)
+
+                checked = projection.validate_projection_mapping(result.ir, result.mapping, validation_without_trust)
+
+                self.assertEqual("BLOCKED", checked["status"])
+                self.assertIn("PROJECTION_TRUST_MISSING", {issue["code"] for issue in checked["issues"]})
 
     def test_projection_rejects_mismatched_session_anchor(self):
         result = projection.build_readiness_projection(self.session)
