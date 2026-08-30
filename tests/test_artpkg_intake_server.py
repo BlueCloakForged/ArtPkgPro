@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,3 +56,26 @@ class IntakeServerTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "outside the configured intake sessions directory"):
                 server.resolve_session_dir(str(outside_session), workspace)
+
+    def test_load_workspace_session_normalizes_malicious_session_dir_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            session_dir = workspace / ".artpkg" / "intake_sessions" / "session-1"
+            malicious_session_dir = Path(temp_dir) / "outside" / "session-1"
+            session_dir.mkdir(parents=True)
+            questionnaire = server.artpkg_intake.questionnaire
+            answers = {
+                "schema_version": questionnaire.SCHEMA_VERSION,
+                "answers": {},
+                "records": {section: [] for section in questionnaire.ID_PREFIXES},
+            }
+            (session_dir / "answers.json").write_text(json.dumps(answers), encoding="utf-8")
+            (session_dir / "seed.json").write_text(json.dumps({"answers": {}}), encoding="utf-8")
+            (session_dir / "session.json").write_text(
+                json.dumps({"session_id": "S", "session_dir": str(malicious_session_dir)}),
+                encoding="utf-8",
+            )
+
+            session = server.load_workspace_session(str(session_dir), workspace)
+
+            self.assertEqual(str(session_dir.resolve()), session["session_dir"])

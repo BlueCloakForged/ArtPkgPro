@@ -58,6 +58,13 @@ def resolve_session_dir(session_dir: str, workspace: str | Path) -> Path:
     return resolved_session_dir
 
 
+def load_workspace_session(session_dir: str, workspace: str | Path) -> dict[str, Any]:
+    resolved_session_dir = resolve_session_dir(session_dir, workspace)
+    session = artpkg_intake.load_intake_session(resolved_session_dir)
+    session["session_dir"] = str(resolved_session_dir)
+    return session
+
+
 class IntakeHandler(BaseHTTPRequestHandler):
     workspace = Path.cwd()
     template_path: Path | None = None
@@ -83,8 +90,7 @@ class IntakeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/session":
             try:
                 params = parse_qs(parsed.query)
-                session_dir = resolve_session_dir(params.get("dir", [""])[0], self.workspace)
-                session = artpkg_intake.load_intake_session(session_dir)
+                session = load_workspace_session(params.get("dir", [""])[0], self.workspace)
                 self._json(200, session_summary(session))
             except Exception as exc:
                 self._json(400, {"error": str(exc)})
@@ -108,8 +114,7 @@ class IntakeHandler(BaseHTTPRequestHandler):
                 return
 
             payload = json.loads(body.decode("utf-8") or "{}")
-            session_dir = resolve_session_dir(payload["session_dir"], self.workspace)
-            session = artpkg_intake.load_intake_session(session_dir)
+            session = load_workspace_session(payload["session_dir"], self.workspace)
             if parsed.path == "/api/session/confirm":
                 artpkg_intake.confirm_answer(session, payload["question_id"], payload.get("reviewer", "UI reviewer"))
                 self._json(200, session_summary(session))
