@@ -57,6 +57,7 @@ def build_readiness_projection(session: dict[str, Any], output_dir: str | Path |
     document = session["document"]
     validation = questionnaire.validate_answers(document)
     validation["projection_trust"] = _projection_trust(session)
+    validation["projection_expectations"] = _projection_expectations(session, validation)
     session["validation"] = validation
     root = Path(output_dir or session["session_dir"]).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -68,7 +69,6 @@ def build_readiness_projection(session: dict[str, Any], output_dir: str | Path |
     gate_summary = ", ".join(f"{key}:{gate.get('result', 'UNKNOWN')}" for key, gate in validation.get("gates", {}).items()) or "not evaluated"
     authority = _answer(document, "AUT-001").get("value", "UNKNOWN")
     next_action = _answer(document, "HND-007").get("value", "HUMAN_REVIEW_ONLY")
-    projection_expectations = _projection_expectations(session, validation)
 
     ir = {
         "schema_version": 1,
@@ -77,7 +77,6 @@ def build_readiness_projection(session: dict[str, Any], output_dir: str | Path |
             "title": "ArtPkg Intake Readiness",
             "quality_profile": "showcase",
             "visual_preset": "blueprint",
-            "projection_expectations": projection_expectations,
             "views": [
                 {"id": "reviewQueuesView", "label": "Review queues", "focus": ["preArtifacts", "seededDraft", "reviewQueues"], "note": "See what the upload seeded and what still needs human review."},
                 {"id": "whyBlockedView", "label": "Why blocked", "focus": ["reviewQueues", "acceptanceCriteria", "authorityState", "gateReadiness"], "note": "Missing answers, acceptance criteria, evidence, or authority keep gates from advancing."},
@@ -91,8 +90,8 @@ def build_readiness_projection(session: dict[str, Any], output_dir: str | Path |
             _component("authorityState", "security", "Authority State", f"AUT-001 {authority}", 760, 120, "NO AUTO APPROVAL"),
             _component("acceptanceCriteria", "security", "Acceptance Criteria", "must link requirements to evidence", 760, 300, "CHECK"),
             _component("evidenceState", "messagebus", "Evidence State", f"{evidence_items} evidence-sensitive fields", 500, 470, "NOT PROOF"),
-            _component("gateReadiness", "security", "Gate Readiness", gate_summary, 1000, 260, validation.get("status", "DRAFT")),
-            _component("nextPermittedAction", "frontend", "Next Action", str(next_action)[:42], 1000, 470, "REVIEW ONLY"),
+            _component("gateReadiness", "security", "Gate Readiness", gate_summary, 960, 260, validation.get("status", "DRAFT")),
+            _component("nextPermittedAction", "frontend", "Next Action", str(next_action)[:42], 960, 470, "REVIEW ONLY"),
         ],
         "boundaries": [
             {"kind": "region", "label": "ArtPkg-owned local intake; Archify renders review only", "wraps": ["preArtifacts", "seededDraft", "reviewQueues", "authorityState", "acceptanceCriteria", "evidenceState", "gateReadiness", "nextPermittedAction"], "pad": 26}
@@ -104,9 +103,9 @@ def build_readiness_projection(session: dict[str, Any], output_dir: str | Path |
             {"id": "queuesExposeAcceptance", "from": "reviewQueues", "to": "acceptanceCriteria", "label": "criteria gaps", "variant": "security"},
             {"id": "draftBuildsEvidence", "from": "seededDraft", "to": "evidenceState", "label": "evidence candidates", "variant": "dashed"},
             {"id": "authorityBlocksGates", "from": "authorityState", "to": "gateReadiness", "label": "no implicit authority", "variant": "security"},
-            {"id": "acceptanceBlocksGates", "from": "acceptanceCriteria", "to": "gateReadiness", "label": "must be accepted", "variant": "security"},
+            {"id": "acceptanceBlocksGates", "from": "acceptanceCriteria", "to": "gateReadiness", "label": "must be accepted", "variant": "security", "labelAt": [860, 390]},
             {"id": "evidenceBlocksGates", "from": "evidenceState", "to": "gateReadiness", "label": "must be verified", "variant": "security"},
-            {"id": "gatesConstrainAction", "from": "gateReadiness", "to": "nextPermittedAction", "label": "limits action", "variant": "emphasis"},
+            {"id": "gatesConstrainAction", "from": "gateReadiness", "to": "nextPermittedAction", "label": "limits action", "variant": "emphasis", "labelAt": [1044, 344]},
         ],
     }
 
@@ -135,7 +134,7 @@ def _mapping_for(session: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
         "evidenceState": ["VAL-001", "VAL-002", "VAL-003", "VAL-004"],
         "nextPermittedAction": ["HND-007"],
     }
-    expectations = ir.get("meta", {}).get("projection_expectations", {})
+    expectations = validation.get("projection_expectations", {})
     aggregations = expectations.get("aggregations", _aggregation_expectations(session, validation))
     source_catalog = _source_catalog(document, aggregations)
     authority_value = _answer(document, "AUT-001", "NOT_EVALUATED").get("value", "UNKNOWN")
@@ -307,7 +306,7 @@ def _projection_trust(session: dict[str, Any]) -> dict[str, str]:
 
 def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
-    expectations = ir.get("meta", {}).get("projection_expectations", {})
+    expectations = validation.get("projection_expectations", {})
     source_context = _read_projection_sources(validation, expectations, mapping)
     issues.extend(source_context["issues"])
     component_ids = {component["id"] for component in ir.get("components", [])}
@@ -325,7 +324,7 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
     input_digests = {item.get("sha256") for item in source_inputs}
 
     if not expectations:
-        issues.append({"code": "PROJECTION_EXPECTATIONS_MISSING", "subject": "ir.meta"})
+        issues.append({"code": "PROJECTION_EXPECTATIONS_MISSING", "subject": "validation.projection_expectations"})
     for missing in sorted(component_ids - mapped_node_ids):
         issues.append({"code": "UNMAPPED_NODE", "subject": missing})
     for missing in sorted(edge_ids - mapped_edge_ids):
@@ -338,7 +337,7 @@ def validate_projection_mapping(ir: dict[str, Any], mapping: dict[str, Any], val
     if _is_sha256_digest(expected_source_digest) and input_digests != {expected_source_digest}:
         issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "inputs"})
     if expectations.get("source_artifact_sha256") != expected_source_digest:
-        issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "ir.meta"})
+        issues.append({"code": "SOURCE_DIGEST_MISMATCH", "subject": "validation.projection_expectations"})
     for node in mapping.get("nodes", []):
         archify_id = node.get("archify_id", "UNKNOWN")
         node_digest = node.get("source_artifact_sha256")
@@ -442,7 +441,7 @@ def _read_projection_sources(
     mapping_session_dir = _absolute_resolved_path(mapping.get("session_dir"))
 
     if ir_session_dir != session_dir:
-        issues.append({"code": "SESSION_DIR_MISMATCH", "subject": "ir.meta.projection_expectations.session_dir"})
+        issues.append({"code": "SESSION_DIR_MISMATCH", "subject": "validation.projection_expectations.session_dir"})
     if mapping_session_dir != session_dir:
         issues.append({"code": "SESSION_DIR_MISMATCH", "subject": "mapping.session_dir"})
 

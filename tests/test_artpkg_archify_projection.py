@@ -44,7 +44,8 @@ class ArchifyProjectionTests(unittest.TestCase):
         self.assertEqual("architecture", result.ir["diagram_type"])
         self.assertEqual("ARTPKG_ARCHIFY_MAPPING_SIDECAR", result.mapping["artifact_type"])
         expected_session_dir = str(Path(self.session["session_dir"]).resolve())
-        self.assertEqual(expected_session_dir, result.ir["meta"]["projection_expectations"]["session_dir"])
+        self.assertNotIn("projection_expectations", result.ir["meta"])
+        self.assertEqual(expected_session_dir, self.session["validation"]["projection_expectations"]["session_dir"])
         self.assertEqual(expected_session_dir, result.mapping["session_dir"])
         expected_answers_path = Path(self.session["answers_path"]).resolve()
         self.assertEqual(
@@ -201,7 +202,6 @@ class ArchifyProjectionTests(unittest.TestCase):
     def test_projection_rejects_synchronized_forged_digest(self):
         result = projection.build_readiness_projection(self.session)
         forged = "a" * 64
-        result.ir["meta"]["projection_expectations"]["source_artifact_sha256"] = forged
         result.mapping["inputs"][0]["sha256"] = forged
         for node in result.mapping["nodes"]:
             node["source_artifact_sha256"] = forged
@@ -218,7 +218,6 @@ class ArchifyProjectionTests(unittest.TestCase):
             "source_type": "SOURCE_ARTIFACT",
             "source_reference": result.mapping["inputs"][0]["stored_path"],
         }
-        result.ir["meta"]["projection_expectations"]["authority"] = forged_authority
         for node in result.mapping["nodes"]:
             if node["archify_id"] == "authorityState":
                 node["authority_state"] = "IMPLEMENTATION_WITHIN_EXACT_SCOPE"
@@ -230,7 +229,6 @@ class ArchifyProjectionTests(unittest.TestCase):
 
     def test_projection_rejects_synchronized_evidence_support_tampering(self):
         result = projection.build_readiness_projection(self.session)
-        result.ir["meta"]["projection_expectations"]["evidence_verified_supported"] = True
         for node in result.mapping["nodes"]:
             if node["archify_id"] == "evidenceState":
                 node["answer_state"] = "VERIFIED"
@@ -272,7 +270,7 @@ class ArchifyProjectionTests(unittest.TestCase):
             for key in ("value", "state", "source_type", "source_reference")
         }
 
-        expectations = result.ir["meta"]["projection_expectations"]
+        expectations = dict(self.session["validation"]["projection_expectations"])
         expectations["session_dir"] = str(Path(substituted_session["session_dir"]).resolve())
         expectations["source_artifact_sha256"] = substituted_session["source"]["sha256"]
         expectations["authority"] = substituted_authority
