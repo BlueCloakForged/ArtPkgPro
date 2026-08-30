@@ -17,11 +17,14 @@
     textarea { min-height:84px; resize:vertical; font-family:Consolas, monospace; font-size:12px; }
     .check { display:flex; align-items:flex-start; gap:8px; font-size:13px; line-height:1.35; }
     .check input { margin-top:2px; }
-    button { border:1px solid #8795a5; background:#fff; border-radius:6px; padding:8px 11px; cursor:pointer; }
+    button { border:1px solid #8795a5; background:#fff; border-radius:6px; padding:8px 11px; cursor:pointer; width:auto; justify-self:start; white-space:nowrap; }
     button:disabled { cursor:not-allowed; opacity:0.55; }
     button.primary { background:#174ea6; border-color:#174ea6; color:#fff; }
     button.danger { border-color:#b42318; color:#b42318; }
     .stack { display:grid; gap:12px; }
+    .sidebar-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .review-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px; }
+    .review-toolbar-text { color:#52606d; font-size:13px; line-height:1.35; max-width:620px; }
     .queue-tabs { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px; }
     .queue-tabs button[aria-pressed=true] { background:#17202a; color:#fff; }
     .card { border:1px solid #d8dee6; border-radius:8px; background:#fff; padding:14px; display:grid; gap:8px; }
@@ -57,11 +60,16 @@
         <input id="restrictedAck" type="checkbox">
         <span>I have checked this local upload for secrets, credentials, regulated data, and restricted content handling.</span>
       </label>
-      <button class="primary" id="upload">Start questionnaire</button>
-      <button id="buildProjection">Build readiness projection</button>
+      <div class="sidebar-actions">
+        <button class="primary" id="upload">Start questionnaire</button>
+      </div>
       <div id="sessionMeta" class="status"></div>
     </aside>
     <section>
+      <div class="review-toolbar">
+        <div class="review-toolbar-text">You can answer items now, or visualize unresolved areas first.</div>
+        <button class="primary" id="visualizeGaps">Visualize gaps</button>
+      </div>
       <div class="queue-tabs" id="queueTabs"></div>
       <div class="stack" id="reviewQueues"></div>
       <div class="stack" id="projectionArea"></div>
@@ -99,7 +107,7 @@
       const question = item.question || {};
       const guidance = document.createElement("div");
       guidance.className = "guidance";
-      appendText(guidance, "div", "guidance-title", `${question.group || "Questionnaire"} · ${question.answer_type || "Answer"}`);
+      appendText(guidance, "div", "guidance-title", `${question.group || "Questionnaire"} - ${question.answer_type || "Answer"}`);
       appendText(guidance, "div", "", question.group_description || "Provide enough context to make this package reviewable.");
       const meaning = document.createElement("div");
       meaning.className = "guidance-row";
@@ -123,7 +131,7 @@
       const context = item.record_context || {};
       const guidance = document.createElement("div");
       guidance.className = "guidance";
-      appendText(guidance, "div", "guidance-title", `${context.label || item.label || "Record"} · ${context.group || "Repeated record"}`);
+      appendText(guidance, "div", "guidance-title", `${context.label || item.label || "Record"} - ${context.group || "Repeated record"}`);
       appendText(guidance, "div", "", context.group_description || "Review each seeded field before accepting the record into the package.");
       const fields = document.createElement("div");
       fields.className = "field-grid";
@@ -267,9 +275,9 @@
       render();
     };
 
-    document.getElementById("buildProjection").onclick = async () => {
+    async function buildProjection() {
       if (!session) { setStatus("Start a session first"); return; }
-      setStatus("Building readiness projection");
+      setStatus("Visualizing gaps");
       try {
         session = await postJson("/api/session/project", { session_dir:session.session_dir });
         const area = document.getElementById("projectionArea");
@@ -289,12 +297,14 @@
         }
         appendText(card, "div", "value", JSON.stringify(session.projection, null, 2));
         area.appendChild(card);
-        setStatus("Projection ready");
+        setStatus("Visualization ready");
         render();
       } catch (error) {
-        setStatus(`Projection failed: ${error.message}`);
+        setStatus(`Visualization failed: ${error.message}`);
       }
-    };
+    }
+
+    document.getElementById("visualizeGaps").onclick = buildProjection;
   </script>
 </body>
 </html>

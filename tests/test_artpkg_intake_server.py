@@ -164,11 +164,23 @@ class IntakeServerTests(unittest.TestCase):
         self.assertIn('dataset.action = "confirm"', html)
         self.assertIn('dataset.action = "reject"', html)
         self.assertIn('dataset.action = "answer"', html)
-        self.assertIn('id="buildProjection"', html)
+        self.assertIn('id="visualizeGaps"', html)
         self.assertIn("renderQuestionContext", html)
         self.assertIn("renderRecordContext", html)
         self.assertIn("Open visualization", html)
         self.assertIn("/api/session/projection-html", html)
+
+    def test_ui_places_compact_visualization_action_above_review_queues(self):
+        html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
+        html = html_path.read_text(encoding="utf-8")
+
+        self.assertIn('class="review-toolbar"', html)
+        self.assertIn('id="visualizeGaps"', html)
+        self.assertIn("Visualize gaps", html)
+        self.assertIn("visualize unresolved areas first", html)
+        self.assertIn("function buildProjection", html)
+        self.assertLess(html.index('id="visualizeGaps"'), html.index('id="queueTabs"'))
+        self.assertNotIn("Build readiness projection", html)
 
     def test_ui_supports_answer_and_record_actions(self):
         html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
