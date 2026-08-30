@@ -76,6 +76,102 @@ def projection_html_response(session_dir: str, workspace: str | Path) -> tuple[i
     return 200, {"Content-Type": "text/html; charset=utf-8", "Content-Length": str(len(body))}, body
 
 
+def decorate_projection_html(html_path: str | Path, mapping_path: str | Path) -> None:
+    target = Path(html_path)
+    mapping = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
+    payload = {
+        "session_dir": mapping.get("session_dir"),
+        "nodes": {
+            node.get("archify_id"): node.get("artpkg_review_action")
+            for node in mapping.get("nodes", [])
+            if node.get("archify_id") and node.get("artpkg_review_action")
+        },
+    }
+    if not payload["nodes"]:
+        return
+    page = target.read_text(encoding="utf-8")
+    if "artpkg-review-actions-data" in page:
+        return
+    data = json.dumps(payload, ensure_ascii=True).replace("</", "<\\/")
+    injection = f"""
+<style id="artpkg-review-actions-style">
+  .artpkg-review-panel {{ border-top:1px solid rgba(125, 211, 252, .35); margin-top:12px; padding-top:10px; display:grid; gap:7px; }}
+  .artpkg-review-panel[hidden] {{ display:none; }}
+  .artpkg-review-eyebrow {{ color:#7dd3fc; font-size:10px; font-weight:800; letter-spacing:.09em; text-transform:uppercase; }}
+  .artpkg-review-panel p {{ margin:0; color:#c8d7e3; font-size:12px; line-height:1.35; }}
+  .artpkg-review-panel a {{ display:inline-flex; width:max-content; border:1px solid #7dd3fc; border-radius:4px; padding:6px 8px; color:#e8f7ff; text-decoration:none; font-size:12px; font-weight:800; }}
+</style>
+<script id="artpkg-review-actions-data" type="application/json">{data}</script>
+<script>
+(function () {{
+  var dataElement = document.getElementById('artpkg-review-actions-data');
+  if (!dataElement) return;
+  var data = JSON.parse(dataElement.textContent || '{{}}');
+  var chip = document.getElementById('focus-chip');
+  if (!chip) return;
+  var panel = document.createElement('div');
+  panel.className = 'artpkg-review-panel';
+  panel.setAttribute('data-artpkg-review-panel', '');
+  panel.hidden = true;
+  chip.appendChild(panel);
+  function hrefFor(action) {{
+    var query = new URLSearchParams();
+    if (data.session_dir) query.set('dir', data.session_dir);
+    if (action.queue) query.set('queue', action.queue);
+    if (action.focus) query.set('focus', action.focus);
+    return '/?' + query.toString();
+  }}
+  function render(nodeId) {{
+    var action = data.nodes && data.nodes[nodeId];
+    panel.textContent = '';
+    if (!action) {{ panel.hidden = true; return; }}
+    panel.hidden = false;
+    var eyebrow = document.createElement('span');
+    eyebrow.className = 'artpkg-review-eyebrow';
+    eyebrow.textContent = 'ArtPkg review';
+    var summary = document.createElement('p');
+    summary.textContent = action.summary || 'Open the related ArtPkg review item.';
+    var impact = document.createElement('p');
+    impact.textContent = action.impact || 'Review this before changing downstream readiness.';
+    var link = document.createElement('a');
+    var href = hrefFor(action);
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = action.label || 'Open in ArtPkg';
+    link.addEventListener('click', function (event) {{
+      event.preventDefault();
+      window.open(href, '_blank', 'noopener');
+    }});
+    panel.appendChild(eyebrow);
+    panel.appendChild(summary);
+    panel.appendChild(impact);
+    panel.appendChild(link);
+  }}
+  document.addEventListener('click', function (event) {{
+    var node = event.target.closest && event.target.closest('[data-node-id]');
+    if (node) setTimeout(function () {{ render(node.getAttribute('data-node-id')); }}, 0);
+  }}, true);
+  document.addEventListener('keyup', function (event) {{
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    var node = event.target.closest && event.target.closest('[data-node-id]');
+    if (node) setTimeout(function () {{ render(node.getAttribute('data-node-id')); }}, 0);
+  }}, true);
+  window.addEventListener('hashchange', function () {{
+    var match = String(location.hash || '').match(/focus=([^&]+)/);
+    if (match) render(decodeURIComponent(match[1]));
+  }});
+}}());
+</script>
+"""
+    marker = "</body>"
+    if marker in page:
+        page = page.replace(marker, injection + "\n" + marker, 1)
+    else:
+        page += injection
+    target.write_text(page, encoding="utf-8")
+
+
 def archify_config_for_session(session: dict[str, Any]) -> artpkg_archify_runner.ArchifyConfig:
     return artpkg_archify_runner.ArchifyConfig(
         node_executable=os.environ.get("ARTPKG_NODE", "node"),
@@ -92,6 +188,8 @@ def build_projection_summary(session: dict[str, Any]) -> dict[str, Any]:
     validate = artpkg_archify_runner.run_archify_validate(config, "architecture", result.ir_path)
     Path(html_path).unlink(missing_ok=True)
     deliver = artpkg_archify_runner.run_archify_deliver(config, "architecture", result.ir_path, html_path)
+    if deliver.get("ok") is True and Path(html_path).exists():
+        decorate_projection_html(html_path, result.mapping_path)
     visual = artpkg_archify_runner.run_archify_visual_check(config, html_path) if deliver.get("ok") is True and Path(html_path).exists() else {
         "ok": False,
         "operation": "visual-check",

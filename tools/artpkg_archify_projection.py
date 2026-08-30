@@ -159,6 +159,7 @@ def _mapping_for(session: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
             "mapping_type": "aggregation" if aggregation else "records",
             "artpkg_records": answer_ids,
             "aggregation": copy.deepcopy(aggregation),
+            "artpkg_review_action": _artpkg_review_action(component_id, session, aggregation, answer_ids),
             "source_answers": {qid: _source_answer(document, qid) for qid in answer_ids},
             "source_records": _source_records(document, aggregation.get("sections", []) if aggregation else []),
             "provenance": "DERIVED_BY_SCRIPT" if component_id in {"reviewQueues", "gateReadiness", "nextPermittedAction"} else "SOURCE_ARTIFACT",
@@ -193,6 +194,62 @@ def _mapping_for(session: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
             "No Archify receipt is treated as ArtPkg gate evidence.",
         ],
     }
+
+
+def _artpkg_review_action(component_id: str, session: dict[str, Any], aggregation: dict[str, Any] | None, answer_ids: list[str]) -> dict[str, Any]:
+    queue_counts = {name: len(items) for name, items in session.get("review_queues", {}).items()}
+    actions = {
+        "reviewQueues": {
+            "label": "Open review queue",
+            "queue": "needs_answer",
+            "focus": "reviewQueues",
+            "summary": f"Needs answer: {queue_counts.get('needs_answer', 0)}; needs confirmation: {queue_counts.get('needs_confirmation', 0)}",
+            "impact": "This node summarizes unresolved intake work before gate readiness can advance.",
+        },
+        "authorityState": {
+            "label": "Answer AUT-001 in ArtPkg",
+            "queue": "authority_sensitive",
+            "focus": "AUT-001",
+            "summary": "Primary question: AUT-001 Current authority state",
+            "impact": "This constrains Gate Readiness and Next Action; it does not authorize implementation.",
+        },
+        "acceptanceCriteria": {
+            "label": "Review acceptance criteria in ArtPkg",
+            "queue": "evidence_sensitive",
+            "focus": "AC-SET",
+            "summary": "Primary record set: AC-SET Acceptance criteria",
+            "impact": "Criteria gaps affect Gate Readiness and evidence requirements.",
+        },
+        "evidenceState": {
+            "label": "Review evidence-sensitive items",
+            "queue": "evidence_sensitive",
+            "focus": "evidenceState",
+            "summary": f"Evidence-sensitive queue items: {queue_counts.get('evidence_sensitive', 0)}",
+            "impact": "Evidence gaps affect validation confidence and downstream acceptance claims.",
+        },
+        "gateReadiness": {
+            "label": "Review final attestations",
+            "queue": "needs_answer",
+            "focus": "FIN-001",
+            "summary": "Gate readiness depends on unresolved answers, authority, criteria, and evidence.",
+            "impact": "Blocked gates limit the next permitted action.",
+        },
+        "nextPermittedAction": {
+            "label": "Answer next action in ArtPkg",
+            "queue": "needs_answer",
+            "focus": "HND-007",
+            "summary": "Primary question: HND-007 Next permitted action",
+            "impact": "This records the review-only next step; it cannot elevate authority.",
+        },
+    }
+    fallback_focus = answer_ids[0] if answer_ids else (aggregation or {}).get("record_set", component_id)
+    return actions.get(component_id, {
+        "label": "Open in ArtPkg",
+        "queue": "needs_answer",
+        "focus": fallback_focus,
+        "summary": f"Mapped ArtPkg item: {fallback_focus}",
+        "impact": "Review the source package context before changing downstream readiness.",
+    })
 
 
 def _source_answer(document: dict[str, Any], qid: str) -> dict[str, Any]:

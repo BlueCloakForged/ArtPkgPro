@@ -78,6 +78,22 @@ class ArchifyProjectionTests(unittest.TestCase):
 
         self.assertEqual("P1-Q1..P1-Q5 review required", next_action["sublabel"])
 
+    def test_mapping_nodes_include_artpkg_review_actions(self):
+        result = projection.build_readiness_projection(self.session)
+        actions = {node["archify_id"]: node["artpkg_review_action"] for node in result.mapping["nodes"]}
+
+        self.assertEqual("Open review queue", actions["reviewQueues"]["label"])
+        self.assertEqual("needs_answer", actions["reviewQueues"]["queue"])
+        self.assertEqual("reviewQueues", actions["reviewQueues"]["focus"])
+        self.assertIn("Needs answer:", actions["reviewQueues"]["summary"])
+        self.assertEqual("Answer AUT-001 in ArtPkg", actions["authorityState"]["label"])
+        self.assertEqual("AUT-001", actions["authorityState"]["focus"])
+        self.assertEqual("authority_sensitive", actions["authorityState"]["queue"])
+        self.assertIn("constrains Gate Readiness", actions["authorityState"]["impact"])
+        self.assertEqual("Review acceptance criteria in ArtPkg", actions["acceptanceCriteria"]["label"])
+        self.assertEqual("AC-SET", actions["acceptanceCriteria"]["focus"])
+        self.assertEqual("evidence_sensitive", actions["acceptanceCriteria"]["queue"])
+
     def test_projection_rejects_unmapped_node(self):
         result = projection.build_readiness_projection(self.session)
         result.mapping["nodes"] = [node for node in result.mapping["nodes"] if node["archify_id"] != "authorityState"]

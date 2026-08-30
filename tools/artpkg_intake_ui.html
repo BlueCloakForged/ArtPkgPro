@@ -28,6 +28,7 @@
     .queue-tabs { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px; }
     .queue-tabs button[aria-pressed=true] { background:#17202a; color:#fff; }
     .card { border:1px solid #d8dee6; border-radius:8px; background:#fff; padding:14px; display:grid; gap:8px; }
+    .card[data-focus-match=true] { border-color:#174ea6; box-shadow:0 0 0 3px rgba(23, 78, 166, .16); }
     .meta { color:#52606d; font-size:12px; }
     .guidance { border-left:3px solid #2f6f5e; background:#eef7f3; padding:10px 12px; display:grid; gap:6px; font-size:13px; line-height:1.4; }
     .guidance-title { font-weight:700; color:#183d34; }
@@ -78,6 +79,8 @@
   <script>
     let session = null;
     let activeQueue = "needs_answer";
+    let focusItemId = "";
+    let focusQueueName = "";
     const labels = {
       needs_answer: "Needs answer",
       needs_confirmation: "Needs confirmation",
@@ -160,6 +163,7 @@
 
     function render() {
       if (!session) return;
+      if (focusQueueName && session.review_queues[focusQueueName]) activeQueue = focusQueueName;
       document.getElementById("sessionMeta").textContent = `Session: ${session.session_id}`;
       const tabs = document.getElementById("queueTabs");
       tabs.innerHTML = "";
@@ -176,6 +180,8 @@
       (session.review_queues[activeQueue] || []).forEach((item) => {
         const card = document.createElement("article");
         card.className = "card";
+        const matchesFocus = focusItemId && (item.id === focusItemId || item.section === focusItemId || item.label === focusItemId);
+        if (matchesFocus) card.setAttribute("data-focus-match", "true");
         appendText(card, "strong", "", `${item.id} ${item.label || ""}`);
         appendText(card, "div", "meta", `${item.reason || ""} | ${item.state || ""} | ${item.source_type || ""} | confidence ${item.confidence_score ?? "n/a"}`);
         if (item.kind === "answer") renderQuestionContext(card, item);
@@ -258,6 +264,9 @@
         actions.appendChild(rejectButton);
         card.appendChild(actions);
         list.appendChild(card);
+        if (matchesFocus) {
+          setTimeout(() => card.scrollIntoView({ behavior:"smooth", block:"center" }), 0);
+        }
       });
     }
 
@@ -271,6 +280,8 @@
       const response = await fetch("/api/intake", { method:"POST", body });
       session = await response.json();
       if (!response.ok) { setStatus(session.error || "Upload failed"); return; }
+      focusItemId = "";
+      focusQueueName = "";
       setStatus("Session ready");
       render();
     };
@@ -304,6 +315,22 @@
     }
 
     document.getElementById("visualizeGaps").onclick = buildProjection;
+
+    async function loadSessionFromQuery() {
+      const params = new URLSearchParams(window.location.search);
+      const dir = params.get("dir");
+      if (!dir) return;
+      focusItemId = params.get("focus") || "";
+      focusQueueName = params.get("queue") || "";
+      setStatus("Loading intake session");
+      const response = await fetch(`/api/session?dir=${encodeURIComponent(dir)}`);
+      session = await response.json();
+      if (!response.ok) { setStatus(session.error || "Session load failed"); return; }
+      setStatus(focusItemId ? `Focused ${focusItemId}` : "Session ready");
+      render();
+    }
+
+    loadSessionFromQuery();
   </script>
 </body>
 </html>

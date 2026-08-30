@@ -86,9 +86,21 @@ class IntakeServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             ir_path = Path(temp_dir) / "artpkg-readiness.architecture.json"
             ir_path.write_text("{}", encoding="utf-8")
+            mapping_path = Path(temp_dir) / "artpkg-readiness.mapping.json"
+            mapping_path.write_text(json.dumps({
+                "session_dir": temp_dir,
+                "nodes": [{
+                    "archify_id": "authorityState",
+                    "artpkg_review_action": {
+                        "label": "Answer AUT-001 in ArtPkg",
+                        "queue": "authority_sensitive",
+                        "focus": "AUT-001",
+                    },
+                }],
+            }), encoding="utf-8")
             projection = SimpleNamespace(
                 ir_path=str(ir_path),
-                mapping_path=str(Path(temp_dir) / "artpkg-readiness.mapping.json"),
+                mapping_path=str(mapping_path),
                 validation_path=str(Path(temp_dir) / "artpkg-readiness.projection-validation.json"),
             )
             def deliver_receipt(_config, _kind, _ir, html):
@@ -100,15 +112,44 @@ class IntakeServerTests(unittest.TestCase):
                     patch("artpkg_intake_server.artpkg_archify_runner.run_archify_deliver", side_effect=deliver_receipt) as deliver, \
                     patch("artpkg_intake_server.artpkg_archify_runner.run_archify_visual_check", return_value={"ok": True, "receipt_path": "visual.json"}) as visual:
                 summary = server.build_projection_summary({"session_dir": temp_dir})
+            decorated_html = Path(summary["html_path"]).read_text(encoding="utf-8")
 
-        self.assertEqual(str(ir_path), summary["ir_path"])
-        self.assertEqual(str(ir_path.with_suffix(".html")), summary["html_path"])
-        self.assertEqual("validate.json", summary["archify"]["validate"]["receipt_path"])
-        self.assertEqual("deliver.json", summary["archify"]["deliver"]["receipt_path"])
-        self.assertEqual("visual.json", summary["archify"]["visual_check"]["receipt_path"])
-        validate.assert_called_once()
-        deliver.assert_called_once()
-        visual.assert_called_once()
+            self.assertEqual(str(ir_path), summary["ir_path"])
+            self.assertEqual(str(ir_path.with_suffix(".html")), summary["html_path"])
+            self.assertEqual("validate.json", summary["archify"]["validate"]["receipt_path"])
+            self.assertEqual("deliver.json", summary["archify"]["deliver"]["receipt_path"])
+            self.assertEqual("visual.json", summary["archify"]["visual_check"]["receipt_path"])
+            validate.assert_called_once()
+            deliver.assert_called_once()
+            visual.assert_called_once()
+            self.assertIn("artpkg-review-actions-data", decorated_html)
+
+    def test_decorate_projection_html_injects_node_review_actions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            html_path = Path(temp_dir) / "artpkg-readiness.architecture.html"
+            html_path.write_text("<html><body><svg><g data-node-id=\"authorityState\"></g></svg></body></html>", encoding="utf-8")
+            mapping_path = Path(temp_dir) / "artpkg-readiness.mapping.json"
+            mapping_path.write_text(json.dumps({
+                "nodes": [{
+                    "archify_id": "authorityState",
+                    "artpkg_review_action": {
+                        "label": "Answer AUT-001 in ArtPkg",
+                        "queue": "authority_sensitive",
+                        "focus": "AUT-001",
+                        "summary": "Primary question: AUT-001",
+                        "impact": "This constrains Gate Readiness.",
+                    },
+                }]
+            }), encoding="utf-8")
+
+            server.decorate_projection_html(html_path, mapping_path)
+            html = html_path.read_text(encoding="utf-8")
+
+            self.assertIn("artpkg-review-actions-data", html)
+            self.assertIn("Answer AUT-001 in ArtPkg", html)
+            self.assertIn("data-artpkg-review-panel", html)
+            self.assertIn("authority_sensitive", html)
+            self.assertIn("window.open(href, '_blank'", html)
 
     def test_build_projection_summary_does_not_visual_check_stale_html_after_failed_deliver(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -191,6 +232,18 @@ class IntakeServerTests(unittest.TestCase):
         self.assertIn("session.projection.html_path", html)
         self.assertNotIn("JSON.stringify(session.projection", html)
         self.assertNotIn("Projection built", html)
+
+    def test_ui_loads_session_and_focus_from_query_parameters(self):
+        html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
+        html = html_path.read_text(encoding="utf-8")
+
+        self.assertIn("loadSessionFromQuery", html)
+        self.assertIn("URLSearchParams(window.location.search)", html)
+        self.assertIn("/api/session?dir=", html)
+        self.assertIn("focusItemId", html)
+        self.assertIn("focusQueueName", html)
+        self.assertIn("data-focus-match", html)
+        self.assertIn("scrollIntoView", html)
 
     def test_ui_supports_answer_and_record_actions(self):
         html_path = Path(__file__).parents[1] / "tools" / "artpkg_intake_ui.html"
